@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Control channel over the IF0 HID report sink (JSON-RPC 2.0 commands).
+// 基于 IF0 HID 报告通道的控制通道，承载 JSON-RPC 命令。
 #pragma once
 
 #include <cstdint>

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MIT
-// usbdisplay_diag - enumerate the USB Display receiver / HID control channel /
-// network interfaces, or run an offline self-test of the protocol codec.
+// 诊断工具：枚举接收器、HID 控制通道与网络接口，或运行离线自检。
 //
-//   usbdisplay_diag --offline     # no hardware needed, exercises codec paths
-//   usbdisplay_diag               # full enumeration + diagnostics
+//   usbdisplay_diag --offline     不访问硬件，自检编解码路径
+//   usbdisplay_diag --probe-json  发送心跳并打印设备回复
+//   usbdisplay_diag               完整枚举与诊断
 //
-// Exit codes: 0 = diagnostics completed (device present or not), 1 = the
-// offline self-test failed, 2 = bad usage.
+// 返回零表示诊断完成，一表示离线自检失败，二表示参数错误。
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -17,6 +16,8 @@
 #include "common/log.h"
 #include "common/util.h"
 #include "proto/nal_scan.h"
+#include "audio/pulse_card.h"
+#include "audio/pulse_discovery.h"
 #include "hid/hid_profile.h"
 #include "hid/report_sink.h"
 #include "proto/wav.h"
@@ -51,7 +52,7 @@ void make_synthetic_annexb(std::vector<uint8_t>* out, int frames) {
     out->push_back(header);
     for (size_t i = 0; i < payload; ++i) out->push_back(fill);
   };
-  // SPS + PPS + IDR then non-IDR pictures. NAL type in low 5 bits.
+  // 依次生成 SPS、PPS、IDR 与非关键帧图像。
   append_nal(0x67, 32, 0x11);  // SPS
   append_nal(0x68, 8, 0x22);   // PPS
   for (int f = 0; f < frames; ++f) {
@@ -105,7 +106,7 @@ int run_offline_selftest() {
   using namespace usbdisplay;
   std::printf("usbdisplay_diag offline self-test (%s)\n", version_string());
 
-  // ---- version / JSON ----
+  // 版本与 JSON 解析。
   check(std::string(version_string()).find("usbdisplay") == 0, "version string");
   {
     const std::string text =
@@ -127,7 +128,7 @@ int run_offline_selftest() {
     check(!json::Value::parse("{\"a\":}", &bad, &err), "JSON rejects bad input");
   }
 
-  // ---- synthetic Annex-B + AU splitter ----
+  // 合成 Annex-B 码流与访问单元拆分。
   std::vector<uint8_t> stream;
   make_synthetic_annexb(&stream, 4);
   std::vector<proto::annexb::AccessUnit> aus;
@@ -146,7 +147,7 @@ int run_offline_selftest() {
           "last AU ends at buffer end");
   }
 
-  // ---- legacy packetizer / depacketizer round-trip ----
+  // legacy 打包与解包往返。
   {
     proto::PacketizeOptions options;
     options.format = proto::WireFormat::LegacyEzV1;
@@ -184,14 +185,14 @@ int run_offline_selftest() {
     }
     check(all_ok, "legacy header fields + seq");
     check(received == payload.size(), "legacy reassembled byte count");
-    // Golden header bytes (provisional layout; update if the spec changes).
+    // 固定头部字节。
     const uint8_t* h = packets[0].data();
     check(usbdisplay::read_le32(h) == 0x50445A45u, "legacy magic EZDP");
     check(h[4] == 1 && h[5] == 1 && h[6] == 3, "legacy version/kind/flags");
     check(usbdisplay::read_le64(h + 24) == 1234567, "legacy pts offset 24");
   }
 
-  // ---- TCP length prefix ----
+  // TCP 长度前缀。
   {
     proto::PacketizeOptions options;
     options.length_prefix = true;
@@ -211,7 +212,7 @@ int run_offline_selftest() {
           "TCP length prefix strip");
   }
 
-  // ---- RTP profile ----
+  // RTP 封装。
   {
     proto::PacketizeOptions options;
     options.format = proto::WireFormat::RtpAvc;
@@ -237,7 +238,7 @@ int run_offline_selftest() {
         fu_seen = true;
       }
       if ((parsed.flags & proto::kFlagAuStart) && parsed.payload_len > 1) {
-        // first fragment must carry the original NAL type in FU header
+        // 首个分片的 FU 头需携带原 NAL 类型
       }
     }
     check(all_ok, "RTP seq continuity");
@@ -245,7 +246,7 @@ int run_offline_selftest() {
     check(packets.back().size() >= 12, "RTP packet size sanity");
   }
 
-  // ---- WAV ----
+  // WAV 解析。
   {
     const std::vector<uint8_t> wav = make_wav_pcm16(48000, 2, 480);
     proto::wav::WavInfo info;
@@ -261,7 +262,7 @@ int run_offline_selftest() {
     check(samples.size() == 480 * 2, "WAV sample count");
   }
 
-  // ---- wire format names ----
+  // 封装格式名称。
   {
     proto::WireFormat format;
     check(proto::wire_format_from_name("legacy-v1", &format) &&
@@ -279,6 +280,44 @@ int run_offline_selftest() {
   return g_failures == 0 ? 0 : 1;
 }
 
+int run_audio_probe() {
+  using namespace usbdisplay;
+  std::printf("== PulseAudio 输出 ==\n");
+  std::unique_ptr<audio::PulseDiscovery> discovery =
+      audio::make_libpulse_discovery();
+  std::vector<audio::PulseSinkInfo> sinks;
+  std::string err;
+  if (!discovery->list_sinks(&sinks, &err)) {
+    std::printf("  sink 查询失败：%s\n", err.c_str());
+    return 1;
+  }
+  for (const auto& sink : sinks) {
+    std::printf("  sink：%s\n", sink.name.c_str());
+  }
+  std::string default_sink;
+  if (discovery->get_default_sink(&default_sink, &err)) {
+    std::printf("  默认 sink：%s\n", default_sink.c_str());
+  } else {
+    std::printf("  默认 sink 查询失败：%s\n", err.c_str());
+  }
+  const std::string usb_sink = audio::select_usb_sink(sinks);
+  std::printf("  USB sink：%s\n",
+              usb_sink.empty() ? "未找到" : usb_sink.c_str());
+  std::unique_ptr<audio::PulseCardControl> card_control =
+      audio::make_libpulse_card_control();
+  std::vector<audio::PulseCardInfo> cards;
+  if (card_control->list_cards(&cards, &err)) {
+    for (const auto& card : cards) {
+      std::printf("  声卡：%s profile=%s\n", card.name.c_str(),
+                  card.active_profile.c_str());
+    }
+  } else {
+    std::printf("  声卡查询失败：%s\n", err.c_str());
+  }
+  std::printf("  默认输出未修改\n");
+  return 0;
+}
+
 void print_usage() {
   std::printf(
       "usage: usbdisplay_diag [--offline] [--vid 0x1de1] [--pid 0xf201]\n"
@@ -288,6 +327,7 @@ void print_usage() {
       "  --offline   run the protocol self-test (no hardware needed)\n"
       "  --probe     full live probe: USB/HID report sizes, ALSA, reachability\n"
       "  --probe-json  also send one heartbeat and print device JSON replies\n"
+      "  --probe-audio list PulseAudio sinks and the selected USB sink\n"
       "  --vid/--pid override the expected USB IDs\n"
       "  --hidraw    restrict diagnostics to one hidraw node\n"
       "  --host      receiver host for reachability probe\n");
@@ -445,8 +485,7 @@ bool run_json_probe(const std::string& explicit_path, uint8_t report_id,
     std::printf("  [warn] open %s: %s\n", path.c_str(), err.c_str());
     return false;
   }
-  // Verified: heartbeat must carry a numeric session-id or the device stays
-  // silent.
+  // 心跳必须携带数字形式的会话编号，否则设备不回复。
   const std::string session_id =
       std::to_string((mono_ms() % 900000ULL) + 100000ULL);
   const std::string heartbeat =
@@ -471,8 +510,7 @@ bool run_json_probe(const std::string& explicit_path, uint8_t report_id,
   int replies = 0;
   int heartbeats = 1;
   const uint64_t start = mono_ms();
-  // The device can be busy for a few seconds when it (re)starts projection, so
-  // retry the heartbeat once before giving up.
+  // 设备开始投屏时可能短暂忙碌，因此重试一次心跳。
   while (mono_ms() - start < 4500) {
     if (replies == 0 && heartbeats < 2 && mono_ms() - start > 1800) {
       for (const auto& report : reports) {
@@ -652,6 +690,7 @@ int main(int argc, char** argv) {
   bool offline = false;
   bool probe = false;
   bool probe_json = false;
+  bool probe_audio = false;
   uint16_t vid = kDefaultVid;
   uint16_t pid = kDefaultPid;
   std::string hidraw;
@@ -673,6 +712,8 @@ int main(int argc, char** argv) {
     } else if (arg == "--probe-json") {
       probe = true;
       probe_json = true;
+    } else if (arg == "--probe-audio") {
+      probe_audio = true;
     } else if (arg == "--help" || arg == "-h") {
       print_usage();
       return 0;
@@ -703,6 +744,7 @@ int main(int argc, char** argv) {
   }
   log::set_level(trace);
   if (offline) return run_offline_selftest();
+  if (probe_audio) return run_audio_probe();
   if (probe) {
     std::printf("== full live probe ==\n");
   }

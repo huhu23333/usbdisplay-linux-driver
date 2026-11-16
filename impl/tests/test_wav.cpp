@@ -55,7 +55,7 @@ int main() {
     CHECK(samples[3] == 32767);
   }
   {
-    // 8-bit unsigned PCM is converted to signed 16-bit.
+    // 8 位无符号 PCM 转换为 16 位有符号采样。
     const std::vector<uint8_t> data = {0, 128, 255};
     const auto wav = make_wav(1, 1, 8000, 8, data);
     wav::WavInfo info;
@@ -69,7 +69,7 @@ int main() {
     CHECK(samples[2] == 32512);
   }
   {
-    // 32-bit float PCM: 0.5 -> 16384.
+    // 32 位浮点 PCM 的换算。
     std::vector<uint8_t> data(4);
     const float half = 0.5f;
     std::memcpy(data.data(), &half, 4);
@@ -84,7 +84,7 @@ int main() {
     CHECK(samples[0] == 16384);
   }
   {
-    // 24-bit PCM.
+    // 24 位 PCM 的换算。
     const std::vector<uint8_t> data = {0x00, 0x00, 0x40};  // 0x400000
     const auto wav = make_wav(1, 1, 48000, 24, data);
     wav::WavInfo info;

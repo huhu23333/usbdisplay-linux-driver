@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: MIT
-// fake_device - simulated USB Display receiver for protocol-level tests.
+// 模拟接收器，用于协议层测试。
 //
-// Listens on TCP (length-prefixed packets) and/or UDP (datagrams), parses the
-// media packets with the same wire codec the sender uses, reassembles access
-// units, verifies framing / sequence numbers / PTS / split fields and prints
-// a summary. Works without any hardware or network device.
+// 支持校验 USB 视频 URB 转储文件，也支持通过 TCP 与 UDP 接收 IP 通道报文。
+// 检查封装、访问单元、序号、显示时间戳与分片字段并输出统计，
+// 校验通过时返回零，失败时返回一。
 //
+//   fake_device --usb-dump /tmp/urbs.bin --expect-frames 6
 //   fake_device --tcp-port 9000 --expect-frames 30
-//   fake_device --udp-port 9000 --wire legacy-v1 --hex-bytes 64
-//   usbdisplay_send --synthetic-frames 30 --sink tcp --host 127.0.0.1 --port 9000
-//
-// Exit code 0 when validation passed, 1 otherwise.
+//   fake_device --udp-port 9000 --wire rtp
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -53,11 +50,11 @@ struct Options {
   size_t hex_bytes = 0;
   bool no_length_prefix = false;
   bool quiet = false;
-  // HID report-dump mode (legacy control/report framing).
+  // HID 报告转储模式，供控制通道与历史格式使用。
   std::string hid_dump_path;
   uint32_t hid_report_size = 0;
   bool header_per_chunk = false;
-  // Verified USB video mode: validate a dump of 4096-byte EP2 URBs.
+  // USB 视频模式：校验 4096 字节 URB 转储文件。
   std::string usb_dump_path;
   uint32_t urb_size = 0;
 };
@@ -166,7 +163,7 @@ struct Verifier {
                        pkt.frame_id, buf.data.size(), pkt.au_size);
         }
       }
-      // Validate the keyframe flag against the actual NAL units (IDR type 5).
+      // 根据实际 NAL 单元校验关键帧标记。
       bool has_idr = false;
       std::vector<usbdisplay::proto::detail::NalRange> nals;
       if (usbdisplay::proto::detail::scan_nal_units(buf.data.data(),
@@ -193,11 +190,11 @@ struct Verifier {
     au.insert(au.end(), pkt.payload, pkt.payload + pkt.payload_len);
     ++rtp_au_packets;
     if (pkt.keyframe) {
-      // IDR carried by this access unit
+      // 本访问单元包含 IDR 图像
     }
     const bool au_end = (pkt.flags & usbdisplay::proto::kFlagAuEnd) != 0;
     if (au_end && pkt.marker) {
-      // marker may only be set on the last packet; we check below too.
+      // 标记位只应出现在最后一个报文，下面进行校验。
     }
     if (au_end) {
       if (pkt.keyframe) ++video_keyframes;
@@ -359,7 +356,7 @@ bool process_tcp_stream(Verifier* verifier, std::vector<uint8_t>* buffer,
       buffer->erase(buffer->begin(),
                     buffer->begin() + static_cast<long>(consumed));
     } else {
-      // Unframed TCP stream: treat the whole buffered chunk as one packet.
+      // 无长度前缀的 TCP 流把整个缓冲块视为一个报文。
       if (buffer->empty()) return true;
       if (!verifier->feed(buffer->data(), buffer->size())) return false;
       buffer->clear();
@@ -564,8 +561,7 @@ int run_hid_dump(const Options& options, Verifier* verifier) {
       ++verifier->au_errors;
       continue;
     }
-    // Every report repeats the total payload length; the payload chunk
-    // starts at offset 16 and never exceeds report_size - 16.
+    // 每个报告都写入总负载长度，负载从偏移 16 开始，不超过报告长度减 16。
     size_t payload_len = outer.length;
     if (payload_len > record.report.size() - usbdisplay::hid::kOuterHeaderSize) {
       payload_len = record.report.size() - usbdisplay::hid::kOuterHeaderSize;
@@ -852,9 +848,7 @@ int main(int argc, char** argv) {
   verifier.quiet = options.quiet;
   bool any_received = false;
 
-  // Run both listeners if requested (single-threaded poll on TCP + UDP would
-  // need multiplexing; keep it simple: run one then the other only if only one
-  // was requested, otherwise TCP first then UDP).
+  // 同一时间只运行一种监听方式。
   if (have_tcp && have_udp) {
     std::fprintf(stderr,
                  "please use either --tcp-port or --udp-port, not both\n");

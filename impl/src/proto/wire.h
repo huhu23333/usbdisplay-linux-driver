@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Internal wire codec helpers used by Packetizer/Depacketizer and fake_device.
+// 打包、解包与模拟设备共用的报文编解码工具。
 #pragma once
 
 #include <cstddef>

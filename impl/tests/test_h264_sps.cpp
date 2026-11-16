@@ -9,8 +9,7 @@
 int main() {
   using namespace usbdisplay::proto::h264;
   {
-    // Verified capture characteristics: Main, level 4.2, 1920x1080, VUI
-    // timing 1/120 -> 60 fps.
+    // 抓包码流特征：Main 档次、级别 4.2、1920x1080、VUI 时间参数 1/120，对应 60 帧每秒。
     const std::vector<uint8_t> sps = make_test_sps(1920, 1080, 1, 120, true);
     SpsInfo info;
     std::string err;
@@ -27,7 +26,7 @@ int main() {
     CHECK(std::fabs(info.fps - 60.0) < 1e-6);
   }
   {
-    // 30 fps VUI.
+    // 30 帧每秒的 VUI 参数。
     const std::vector<uint8_t> sps = make_test_sps(1280, 720, 1, 60, true);
     SpsInfo info;
     std::string err;
@@ -36,7 +35,7 @@ int main() {
     CHECK(info.width == 1280 && info.height == 720);
   }
   {
-    // 29.97 fps VUI (60000/1001).
+    // 29.97 帧每秒的 VUI 参数。
     const std::vector<uint8_t> sps =
         make_test_sps(1920, 1080, 1001, 60000, true);
     SpsInfo info;
@@ -45,7 +44,7 @@ int main() {
     CHECK(std::fabs(info.fps - 29.97002997) < 0.01);
   }
   {
-    // Annex-B extraction (start code + SPS) and a missing-VUI case.
+    // 从 Annex-B 码流提取 SPS 以及缺少 VUI 的情况。
     const std::vector<uint8_t> sps = make_test_sps(1920, 1080, 1, 120, true);
     std::vector<uint8_t> stream = {0, 0, 0, 1};
     stream.insert(stream.end(), sps.begin(), sps.end());
@@ -69,7 +68,7 @@ int main() {
     CHECK(!err.empty());
   }
   {
-    // Malformed inputs are rejected rather than crashing.
+    // 格式错误的输入应被拒绝。
     SpsInfo info;
     std::string err;
     const uint8_t junk[] = {0x67, 0x4D, 0x40};

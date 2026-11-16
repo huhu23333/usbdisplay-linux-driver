@@ -13,7 +13,12 @@
 #include <unistd.h>
 #include <vector>
 
-#include "audio/alsa_player.h"
+#include "audio/audio_backend.h"
+#include "audio/audio_open_retry.h"
+#include "audio/audio_pump.h"
+#include "audio/default_sink_guard.h"
+#include "audio/pulse_card.h"
+#include "media_plan.h"
 #include "common/json.h"
 #include "common/log.h"
 #include "common/util.h"
@@ -37,7 +42,7 @@ namespace {
 constexpr int kHeartbeatIntervalMs = 1200;  // verified app sends every ~1.5 s
 constexpr int kNotificationPollMs = 50;
 
-// Verified heartbeat parameter: the receiver echoes this numeric string.
+// 心跳参数：接收器会回传相同的数字字符串。
 std::string make_session_id() {
   const uint64_t value = (mono_ms() % 900000ULL) + 100000ULL;
   return std::to_string(value);
@@ -86,9 +91,23 @@ struct Controller::Impl {
   std::unique_ptr<control::JsonRpcClient> rpc;
   std::unique_ptr<transport::MediaSink> video_sink;
   std::unique_ptr<transport::MediaSink> audio_sink;  // null when multiplexed
-  // USB HID mode (the real device transport).
+  // USB 模式使用的通道对象。
   std::unique_ptr<transport::UsbVideoSink> usb_video;
-  std::unique_ptr<audio::AlsaPlayer> alsa;
+  std::unique_ptr<audio::AudioSink> audio_output;
+  std::unique_ptr<audio::AudioPump> audio_pump;
+  bool video_configured = false;
+  std::string audio_backend;
+  std::string audio_device;
+  std::string audio_open_error;
+  bool audio_attempted = false;
+  std::unique_ptr<audio::PulseDiscovery> pulse_discovery;
+  std::unique_ptr<audio::DefaultSinkGuard> sink_guard;
+  std::string audio_startup_default;
+  bool audio_startup_captured = false;
+  std::unique_ptr<audio::PulseCardControl> card_control;
+  std::unique_ptr<audio::UsbCardProfileGuard> card_guard;
+  bool card_prompted = false;
+  uint64_t audio_started_us = 0;
   std::string control_path;
   bool usb_hid_mode = false;
 
@@ -211,9 +230,8 @@ struct Controller::Impl {
         if (mono_ms() >= deadline) {
           if (err) {
             *err = "control hidraw node " + selector.control_hidraw_path +
-                   " is not accessible; install the udev rule (sudo cp "
-                   "tools/99-usbdisplay.rules /etc/udev/rules.d/ && sudo "
-                   "udevadm control --reload && sudo udevadm trigger)";
+                   " is not accessible; install the udev rule with "
+                   "sudo tools/install-video-rules.sh";
           }
           return false;
         }
@@ -259,13 +277,25 @@ struct Controller::Impl {
     return true;
   }
 
-  // Reset the receiver and wait for it to re-enumerate; callers must have
-  // closed the video sink and the control channel first.
+  // 复位接收器并等待重新枚举，调用前必须关闭视频通道与控制通道。
   bool auto_reset_and_rediscover(std::string* err) {
     if (!usb_hid_mode || selector.mode == LinkMode::IpOnly ||
         !selector.report_dump_path.empty()) {
       if (err) *err = "auto-reset is only available for a real USB device";
       return false;
+    }
+    // 复位前先停止音频线程，检查默认输出，然后关闭音频输出设备。
+    stop_audio(false);
+    restore_usb_card();
+    if (sink_guard) {
+      std::string guard_err;
+      if (!sink_guard->check_and_restore(&guard_err)) {
+        log::warn("默认输出保护检查失败：" + guard_err);
+      }
+    }
+    if (audio_output) {
+      audio_output->close();
+      audio_output.reset();
     }
     if (usb_video) usb_video->close();
     if (control) control->close();
@@ -297,8 +327,8 @@ struct Controller::Impl {
       log::warn("video_hidraw_path is ignored: video now uses libusb EP2 OUT");
     }
 
-    // Video: verified protocol = 4096-byte URBs on EP2 OUT (libusb). Dry runs
-    // write a URB dump instead; no hardware is opened in that case.
+    // 视频通道通过 libusb 向端点 2 输出方向发送 4096 字节 URB。
+    // 离线演练改为写入转储文件，不访问硬件。
     transport::VideoUrbOptions urb;
     urb.vid = selector.vid;
     urb.pid = selector.pid;
@@ -335,21 +365,190 @@ struct Controller::Impl {
     return true;
   }
 
+  bool release_usb_card() {
+    if (card_guard && card_guard->disabled()) return true;
+    if (!card_control) card_control = audio::make_libpulse_card_control();
+    if (!card_guard) {
+      card_guard.reset(new audio::UsbCardProfileGuard(card_control.get()));
+    }
+    std::string card_err;
+    if (card_guard->disable(&card_err)) {
+      if (card_guard->changed() && !card_prompted) {
+        log::warn("PulseAudio 仍占用 USB 声卡，已临时关闭其 profile；"
+                  "建议执行 sudo tools/install-audio-isolation.sh 并重新插拔");
+        card_prompted = true;
+      }
+      return card_guard->disabled();
+    }
+    if (card_err.find("未找到") == std::string::npos) {
+      log::warn("临时释放 USB 声卡失败：" + card_err);
+    }
+    return false;
+  }
+
+  void restore_usb_card() {
+    if (!card_guard || !card_guard->disabled()) return;
+    std::string card_err;
+    if (!card_guard->restore(&card_err)) {
+      log::warn("恢复 USB 声卡 profile 失败：" + card_err);
+    }
+  }
+
   bool open_audio(std::string* err) {
     if (!selector.enable_audio || selector.alsa_device.empty()) return true;
-    alsa.reset(new audio::AlsaPlayer());
-    std::string audio_err;
-    if (!alsa->open(selector.alsa_device, audio.sample_rate, audio.channels,
-                    &audio_err)) {
-      alsa.reset();
-      log::warn("alsa: cannot open " + selector.alsa_device + ": " + audio_err);
+    audio_attempted = true;
+    if (audio_output && audio_output->is_open()) return true;
+    if (audio_output) {
+      audio_output->close();
+      audio_output.reset();
+    }
+    audio::AudioOptions options;
+    options.backend = selector.audio_backend;
+    options.pulse_sink = selector.pulse_sink;
+    options.alsa_device = selector.alsa_device;
+    options.sample_rate = audio.sample_rate;
+    options.channels = audio.channels;
+#ifdef USBDISPLAY_HAVE_PULSE
+    options.pulse_available = true;
+#else
+    options.pulse_available = false;
+#endif
+    if (!pulse_discovery) {
+      pulse_discovery = audio::make_libpulse_discovery();
+    }
+    if (!card_control) {
+      card_control = audio::make_libpulse_card_control();
+    }
+    bool card_visible = false;
+    if (options.pulse_available) {
+      std::vector<audio::PulseCardInfo> cards;
+      std::string card_err;
+      if (card_control->list_cards(&cards, &card_err)) {
+        card_visible = audio::has_usb_card(cards);
+      } else {
+        log::debug("查询 PulseAudio 声卡失败：" + card_err);
+      }
+    }
+    std::string selected_sink = selector.pulse_sink;
+    if (options.pulse_available && selector.audio_backend != "alsa") {
+      std::vector<audio::PulseSinkInfo> sinks;
+      std::string sink_err;
+      if (pulse_discovery->list_sinks(&sinks, &sink_err)) {
+        if (selected_sink.empty()) {
+          selected_sink = audio::select_usb_sink(sinks);
+        }
+      } else if (selector.audio_backend == "pulse") {
+        log::warn("PulseAudio sink 查询失败：" + sink_err);
+      }
+    }
+    const std::string backend = audio::choose_audio_backend(
+        selector.audio_backend, options.pulse_available, card_visible,
+        selected_sink);
+    options.backend = backend;
+    options.pulse_sink = selected_sink;
+    audio::AudioSinkCreator creator =
+        [](const std::string& device, uint32_t rate, uint16_t channels,
+           bool pulse, std::string* e) -> std::unique_ptr<audio::AudioSink> {
+      if (pulse) {
+        return audio::make_audio_sink(device, rate, channels, true, e);
+      }
+      std::unique_ptr<audio::AudioSink> sink;
+      audio::OpenAttempt attempt = [&](std::string* attempt_err) {
+        sink = audio::make_audio_sink(device, rate, channels, false,
+                                      attempt_err);
+        return sink != nullptr;
+      };
+      audio::OpenRetryPolicy policy;
+      const audio::OpenRetryResult retry = audio::open_with_retry(
+          policy, attempt, [](int interval_ms) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+          });
+      if (!retry.ok) {
+        if (e) *e = retry.error;
+        return nullptr;
+      }
+      return sink;
+    };
+    audio::AudioOutput output =
+        audio::create_audio_output(options, pulse_discovery.get(), creator);
+    if (!output.sink && backend == "alsa") {
+      const std::string first_error = output.error;
+      if (release_usb_card()) {
+        output = audio::create_audio_output(options, pulse_discovery.get(),
+                                            creator);
+        if (!output.sink) {
+          restore_usb_card();
+          output.error =
+              first_error + "；card profile off 后仍失败：" + output.error;
+        }
+      }
+    }
+    audio_backend = output.backend;
+    audio_device = output.device;
+    audio_open_error = output.error;
+    if (!output.sink) {
+      restore_usb_card();
+      log::warn("音频输出不可用：" + output.error);
       if (selector.require_audio) {
-        if (err) *err = audio_err;
+        if (err) *err = output.error;
         return false;
       }
       return true;
     }
+    audio_output = std::move(output.sink);
+    audio_started_us = mono_us();
+    log::info("音频输出：" + audio_backend + " " + audio_device);
+    log::info("音频启动时间戳：" + std::to_string(audio_started_us) + " us");
+    if (output.backend == "pulse") {
+      if (!sink_guard) {
+        sink_guard.reset(new audio::DefaultSinkGuard(
+            pulse_discovery.get(), audio_device,
+            selector.restore_default_sink));
+        std::string guard_err;
+        if (audio_startup_captured) {
+          if (!sink_guard->capture_with_default(audio_startup_default,
+                                                &guard_err)) {
+            log::warn("默认输出保护未启用：" + guard_err);
+          }
+        } else {
+          log::warn("默认输出未在开流前保存，保护未启用");
+        }
+      }
+      if (sink_guard) {
+        std::string guard_err;
+        if (!sink_guard->check_and_restore(&guard_err)) {
+          log::warn("默认输出保护检查失败：" + guard_err);
+        }
+      }
+    }
     return true;
+  }
+
+  bool start_audio(std::string* err) {
+    if (!audio_output || !audio_output->is_open()) return true;
+    if (audio_pump) return true;
+    audio::AudioPumpConfig config;
+    if (sink_guard) {
+      config.periodic_check = [this]() {
+        std::string guard_err;
+        if (!sink_guard->check_and_restore(&guard_err)) {
+          log::warn("默认输出保护检查失败：" + guard_err);
+        }
+      };
+    }
+    audio_pump.reset(new audio::AudioPump(audio_output.get(), config));
+    if (!audio_pump->start(err)) {
+      audio_pump.reset();
+      return false;
+    }
+    return true;
+  }
+
+  void stop_audio(bool drain) {
+    if (audio_pump) {
+      audio_pump->stop(drain);
+      audio_pump.reset();
+    }
   }
 
   bool run_handshake(std::string* err) {
@@ -362,9 +561,7 @@ struct Controller::Impl {
     };
     std::vector<Step> steps;
     {
-      // Best current model from work/proto/PROTOCOL.md §2/§9: assign the host
-      // role, then request the stream with the split parameters advertised by
-      // the device (1/1 on this unit).
+      // IP 网络传输路径的握手步骤：先分配主机角色，再请求视频流。
       json::Value role = json::Value::object();
       role.set("role", json::Value("host"));
       role.set("session-id", json::Value(session_id));
@@ -437,8 +634,7 @@ struct Controller::Impl {
       if (err) *err = "no control channel";
       return false;
     }
-    // Verified: heartbeat must carry the numeric session-id; the receiver
-    // echoes it back in its heartbeat reply.
+    // 心跳消息必须携带数字形式的会话编号，接收器会在回复中回传该编号。
     json::Value params = json::Value::object();
     params.set("session-id", json::Value(session_id));
     json::Value request = json::Value::object();
@@ -453,9 +649,8 @@ struct Controller::Impl {
 
   void handle_notification(const control::RpcMessage& message) {
     if (message.has_id) {
-      // The receiver asked us a question: answer it (projection requests
-      // expect result.action allow/deny, everything else gets an empty
-      // result).
+      // 接收器发来带编号的请求，需要回复。投屏请求返回允许或拒绝，
+      // 其他请求返回空结果。
       json::Value response = json::Value::object();
       response.set("jsonrpc", json::Value("2.0"));
       if (message.method == "projection-request-with-tx" ||
@@ -503,8 +698,7 @@ struct Controller::Impl {
     if (cb) cb(event);
   }
 
-  // Reads control messages until timeout or until a response with match_id
-  // arrives. Caller must hold control_mutex.
+  // 读取控制消息，直到超时或收到指定编号的响应。调用方必须持有控制锁。
   bool pump_control(int timeout_ms, int match_id, json::Value* result,
                     bool* matched) {
     if (matched) *matched = false;
@@ -570,11 +764,9 @@ struct Controller::Impl {
     return pump_control(pump_ms, -1, nullptr, nullptr);
   }
 
-  // Verified startup sequence from the Windows USB capture (1.pcapng):
-  // heartbeat(session-id) -> app-launched id1 -> app_tx_mouse_icon_change ->
-  // notify-projection-stopped -> common.data_passthrough -> notify-projection-
-  // stopped -> app-launched id3 -> notify-projection-started id4; wait for the
-  // "isAllowed" result before sending any video.
+  // 设备启动序列：先发送携带会话编号的心跳，再依次发送 app-launched、
+  // 鼠标图标变更、两次投影停止通知、数据透传与最后一次 app-launched，
+  // 最后发送 notify-projection-started 并等待 isAllowed 结果。
   bool run_verified_handshake(std::string* err) {
     if (!control || !rpc) {
       if (err) *err = "no control channel for handshake";
@@ -717,6 +909,20 @@ bool Controller::open(const DeviceSelector& selector, std::string* err) {
   std::lock_guard<std::mutex> lock(d.state_mutex);
   if (d.is_open.load()) {
     d.stop_heartbeat();
+    d.stop_audio(false);
+    d.restore_usb_card();
+    d.card_guard.reset();
+    d.card_control.reset();
+    if (d.sink_guard) {
+      std::string guard_err;
+      d.sink_guard->check_and_restore(&guard_err);
+      d.sink_guard.reset();
+    }
+    if (d.audio_output) {
+      d.audio_output->close();
+      d.audio_output.reset();
+    }
+    d.pulse_discovery.reset();
     d.close_sinks();
     if (d.control) d.control->close();
     d.is_open = false;
@@ -731,6 +937,24 @@ bool Controller::open(const DeviceSelector& selector, std::string* err) {
   d.rpc.reset();
   d.video_sink.reset();
   d.audio_sink.reset();
+
+  // 创建任何 PulseAudio 流之前保存默认 sink，避免 PulseAudio 在开流时自动切换后记录到错误值。
+  d.audio_startup_default.clear();
+  d.audio_startup_captured = false;
+  if (selector.enable_audio && !selector.alsa_device.empty()) {
+    if (!d.pulse_discovery) {
+      d.pulse_discovery = audio::make_libpulse_discovery();
+    }
+    std::string sink_err;
+    if (d.pulse_discovery->get_default_sink(&d.audio_startup_default, &sink_err)) {
+      d.audio_startup_captured = !d.audio_startup_default.empty();
+      if (d.audio_startup_captured) {
+        log::info("开流前默认 sink：" + d.audio_startup_default);
+      }
+    } else {
+      log::warn("保存默认 sink 失败：" + sink_err);
+    }
+  }
 
   proto::WireFormat format = proto::WireFormat::LegacyEzV1;
   if (!proto::wire_format_from_name(selector.wire_format, &format)) {
@@ -772,7 +996,7 @@ bool Controller::open(const DeviceSelector& selector, std::string* err) {
     }
   }
 
-  // ---- media endpoints ----
+  // 媒体端点参数。
   const bool tcp = selector.media_transport == MediaTransport::Tcp;
   d.video_port = selector.video_port != 0
                      ? selector.video_port
@@ -827,20 +1051,42 @@ bool Controller::open(const DeviceSelector& selector, std::string* err) {
 void Controller::close() {
   Impl& d = *impl_;
   std::lock_guard<std::mutex> lock(d.state_mutex);
-  if (!d.is_open.load() && !d.control && !d.video_sink) return;
+  if (!d.is_open.load() && !d.control && !d.video_sink && !d.usb_video &&
+      !d.audio_pump && !d.audio_output && !d.sink_guard && !d.card_guard) {
+    return;
+  }
   const bool was_streaming = d.streaming.exchange(false);
   const bool reset_on_exit =
       d.selector.reset_on_exit && d.usb_hid_mode &&
       d.selector.mode != LinkMode::IpOnly &&
       d.selector.report_dump_path.empty();
   d.stop_heartbeat();
+  d.stop_audio(false);
+  d.restore_usb_card();
   d.close_sinks();
   if (d.control) d.control->close();
   if (was_streaming) {
     d.emit(EventType::StreamingStopped, "closed");
   }
-  if (d.alsa) d.alsa->close();
-  d.alsa.reset();
+  if (d.sink_guard) {
+    std::string guard_err;
+    d.sink_guard->check_and_restore(&guard_err);
+    std::fprintf(stderr, "%s\n", d.sink_guard->exit_note().c_str());
+    d.sink_guard.reset();
+  } else if (d.audio_attempted) {
+    if (d.audio_startup_captured) {
+      std::fprintf(stderr, "默认输出已记录：%s，未修改\n",
+                   d.audio_startup_default.c_str());
+    } else {
+      std::fprintf(stderr, "默认输出未修改\n");
+    }
+  }
+  d.audio_attempted = false;
+  d.card_guard.reset();
+  d.card_control.reset();
+  d.pulse_discovery.reset();
+  if (d.audio_output) d.audio_output->close();
+  d.audio_output.reset();
   if (d.usb_video) d.usb_video->close();
   d.usb_video.reset();
   d.control.reset();
@@ -873,18 +1119,13 @@ bool Controller::configure(const VideoConfig& video, const AudioConfig& audio,
     if (err) *err = "controller not open";
     return false;
   }
-  if (video.width == 0 || video.height == 0 || video.fps == 0 ||
-      video.bitrate_bps == 0) {
-    if (err) *err = "invalid video config";
-    return false;
-  }
-  if (audio.sample_rate == 0 || audio.channels == 0 || audio.channels > 8 ||
-      audio.frame_ms == 0 || audio.frame_ms > 1000) {
-    if (err) *err = "invalid audio config";
+  if (!validate_media_config(video, audio, err)) {
     return false;
   }
   d.video = video;
   d.audio = audio;
+  d.video_configured = video.width != 0 || video.height != 0 ||
+                       video.fps != 0 || video.bitrate_bps != 0;
   if (!d.usb_hid_mode) d.configure_packetizers();
   d.emit(EventType::Configured,
          std::to_string(video.width) + "x" + std::to_string(video.height) +
@@ -908,20 +1149,20 @@ bool Controller::start(std::string* err) {
   }
   if (d.streaming.load()) return true;
   if (d.usb_hid_mode) {
-    if (!d.usb_video) {
+    const bool want_video = !d.selector.disable_video && d.video_configured;
+    if (!d.usb_video && want_video) {
       if (err) *err = "no USB video sink";
       return false;
     }
-    // Auto-reset: the firmware only accepts a fresh session, so retry the
-    // open+handshake path with a libusb reset/re-enumeration in between
-    // instead of asking the operator to replug the device.
+    // 设备固件只接受重新枚举后的会话，失败时复位设备并重新枚举后重试打开与握手。
     transport::ResetRetryPolicy policy;
     policy.auto_reset = d.selector.auto_reset;
     policy.max_reset_attempts = d.selector.auto_reset_retries;
     policy.reset_wait_ms = d.selector.auto_reset_wait_ms;
     transport::ResetRetryCallbacks callbacks;
-    callbacks.attempt = [&d](std::string* attempt_err) -> bool {
-      if (!d.usb_video->connected() && !d.usb_video->open(attempt_err)) {
+    callbacks.attempt = [&d, want_video](std::string* attempt_err) -> bool {
+      if (want_video && !d.usb_video->connected() &&
+          !d.usb_video->open(attempt_err)) {
         return false;
       }
       if (!d.selector.disable_control && d.selector.mode != LinkMode::IpOnly &&
@@ -948,6 +1189,8 @@ bool Controller::start(std::string* err) {
     const transport::ResetRetryResult retry =
         transport::run_with_auto_reset(policy, callbacks);
     if (!retry.ok) {
+      d.stop_audio(false);
+      d.restore_usb_card();
       if (d.usb_video) d.usb_video->close();
       if (d.control) d.control->close();
       d.control.reset();
@@ -960,8 +1203,37 @@ bool Controller::start(std::string* err) {
       log::info("auto-reset: session recovered after " +
                 std::to_string(retry.resets) + " reset(s)");
     }
-    d.media_endpoint = d.usb_video->describe();
-    if (!d.open_audio(err)) return false;
+    d.media_endpoint = want_video ? d.usb_video->describe() : "control-only";
+    const bool audio_ok = d.open_audio(err);
+    if (!audio_ok && d.selector.require_audio) return false;
+    bool audio_started = false;
+    if (audio_ok) {
+      audio_started = d.start_audio(err);
+      if (!audio_started) {
+        d.stop_audio(false);
+        d.restore_usb_card();
+        if (d.audio_output) {
+          d.audio_output->close();
+          d.audio_output.reset();
+        }
+        if (d.selector.require_audio) {
+          d.emit(EventType::Error, err ? *err : "音频播放线程启动失败", 3);
+          return false;
+        }
+        log::warn("音频播放线程启动失败，继续视频：" +
+                  (err ? *err : std::string("未知错误")));
+      }
+    }
+    if (!audio_ok) {
+      log::warn("音频不可用，继续视频：" +
+                (err ? *err : std::string("未知错误")));
+    }
+    if (d.sink_guard) {
+      std::string guard_err;
+      if (!d.sink_guard->check_and_restore(&guard_err)) {
+        log::warn("默认输出保护检查失败：" + guard_err);
+      }
+    }
     if (!d.selector.send_handshake &&
         d.selector.mode != LinkMode::IpOnly) {
       log::warn("handshake disabled: the receiver may ignore video "
@@ -1009,11 +1281,34 @@ bool Controller::start(std::string* err) {
   return true;
 }
 
+bool Controller::stop_audio() {
+  Impl& d = *impl_;
+  std::lock_guard<std::mutex> lock(d.state_mutex);
+  d.stop_audio(true);
+  d.restore_usb_card();
+  log::info("audio stopped, video path continues");
+  return true;
+}
+
+bool Controller::start_audio(std::string* err) {
+  Impl& d = *impl_;
+  std::lock_guard<std::mutex> lock(d.state_mutex);
+  if (!d.streaming.load()) {
+    if (err) *err = "not streaming (call start())";
+    return false;
+  }
+  return d.start_audio(err);
+}
+
 bool Controller::stop() {
   Impl& d = *impl_;
   std::lock_guard<std::mutex> lock(d.state_mutex);
-  if (!d.streaming.exchange(false)) return true;
+  if (!d.streaming.exchange(false)) {
+    d.stop_audio(false);
+    return true;
+  }
   d.stop_heartbeat();
+  d.stop_audio(true);
   d.close_sinks();
   d.emit(EventType::StreamingStopped, "stopped");
   log::info("streaming stopped");
@@ -1036,8 +1331,7 @@ bool Controller::push_video(const uint8_t* annexb, size_t len, uint64_t pts_us,
       if (err) *err = "no USB video sink";
       return false;
     }
-    // Root cause of the earlier black screen: AUs must keep their Annex-B
-    // start codes. Refuse to send a frame that lost them.
+    // 访问单元必须保留 Annex-B 起始码，缺失起始码时拒绝发送。
     if (!has_annexb_start_code(annexb, len)) {
       if (err) {
         *err = "video access unit does not start with an Annex-B start code "
@@ -1104,16 +1398,19 @@ bool Controller::push_audio(const void* pcm, size_t bytes, uint64_t pts_us,
   }
   if (d.usb_hid_mode) {
     if (!d.selector.enable_audio || d.selector.alsa_device.empty()) {
-      log::debug("audio: disabled, dropping PCM");
+      log::debug("音频已关闭，丢弃 PCM 数据");
       return true;
     }
-    if (!d.alsa || !d.alsa->is_open()) {
-      if (err) *err = "ALSA audio device not open";
+    if (!d.audio_pump) {
+      if (err) {
+        *err = d.audio_open_error.empty() ? "音频播放线程未启动"
+                                          : ("音频输出未就绪：" + d.audio_open_error);
+      }
       return false;
     }
-    std::lock_guard<std::mutex> lock(d.send_mutex);
-    if (!d.alsa->write(pcm, bytes, err)) {
-      d.send_errors.fetch_add(1);
+    // 仅入队后立即返回，ALSA 写入由播放线程完成。
+    if (!d.audio_pump->push(pcm, bytes, pts_us, err)) {
+      log::warn("音频入队失败：" + (err ? *err : std::string("未知错误")));
       return false;
     }
     d.audio_frames.fetch_add(1);
@@ -1173,10 +1470,7 @@ bool Controller::request_keyframe(std::string* err) {
     if (err) *err = "controller not open";
     return false;
   }
-  // The protocol method for a keyframe request has not been confirmed yet.
-  // We always signal the caller (which owns the encoder); when a control
-  // channel exists we also expose it through an event so it can be wired to
-  // the confirmed method later.
+  // 请求关键帧时通知调用方，由调用方强制编码器输出 IDR。
   d.emit(EventType::KeyframeRequested, "caller should emit IDR");
   log::info("keyframe requested");
   return true;

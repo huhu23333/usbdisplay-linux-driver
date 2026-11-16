@@ -57,9 +57,7 @@ bool usb_reset_device(uint16_t vid, uint16_t pid, std::string* err) {
       char buf[320];
       std::snprintf(buf, sizeof(buf),
                     "cannot open %04x:%04x for reset: %s; install the udev "
-                    "rule: sudo cp tools/99-usbdisplay.rules "
-                    "/etc/udev/rules.d/ && sudo udevadm control --reload && "
-                    "sudo udevadm trigger",
+                    "rule: sudo tools/install-video-rules.sh",
                     vid, pid, ::libusb_strerror(rc));
       *err = buf;
     }
@@ -80,7 +78,7 @@ bool usb_reset_device(uint16_t vid, uint16_t pid, std::string* err) {
     }
     return false;
   }
-  // Let the kernel drop the old device node before polling for re-enumeration.
+  // 等待内核移除旧设备节点后开始轮询重新枚举。
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
   return true;
 }

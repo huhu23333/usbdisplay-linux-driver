@@ -1,48 +1,19 @@
 // SPDX-License-Identifier: MIT
-// USB HID report framing for the Actions Micro USB Display receiver.
+// 接收器控制通道的 HID 报告封装。
 //
-// The device exposes two HID interfaces (verified from the HID report
-// descriptors of a real 1de1:f201 unit):
-//   IF0: report ID 1, 4095 data bytes (hidraw write buffer = 4096 bytes)
-//        => control channel (JSON-RPC commands), endpoint 64 B
-//   IF1: report ID 2, 12287 data bytes (buffer = 12288 bytes)
-//        => video channel (H.264 access units), endpoint 768 B HB
+// 设备提供两个 HID 接口：
+// IF0：报告编号 1，报告长度 4096 字节，用于控制通道（JSON-RPC 命令）。
+// IF1：视频通道通过 libusb 发送 4096 字节 URB，不使用 HID 报告。
 //
-// Every host->device message is a sequence of fixed-size HID output reports.
-// The 16-byte header was verified on real hardware (work/hw/live_sender.py,
-// probe_hid2.py): every report carries the header, and the big-endian length
-// field is the number of payload bytes in *this* report:
+// 控制消息由一个或多个固定长度 HID 报告组成，每个报告的 16 字节头部：
+// [0] 报告编号
+// [1..4] 大端序，本报告负载字节数
+// [5..8] 大端序参数三
+// [9..12] 大端序参数四
+// [13..15] 保留，取值为零
+// [16..] 负载，长度不超过报告长度减 16
 //
-//   off size field
-//   0    1   report id (1 for IF0, 2 for IF1)
-//   1    4   big-endian payload length of this report
-//   5    4   big-endian param3
-//   9    4   big-endian param4
-//  13    3   zero padding
-//  16    N   payload (N <= report_size - 16)
-//
-// Device->host reports use the same layout (length at offset 1, JSON at 16).
-// A logical message (e.g. one video access unit) is split across reports; each
-// report repeats the header with its own chunk length.
-//
-// Two video framings are implemented:
-//   app   (default): 16-byte outer header + 32-byte LE inner header + Annex-B
-//   ugreen (mode B): 14-byte LE outer header + 32-byte 'RRIM'/'TADV' header +
-//                    Annex-B (still being reverse engineered, configurable)
-//
-// Video messages carry a 32-byte inner header in their payload:
-//   [0]  u32 LE sequence number
-//   [4]  u32 LE payload_len + 24  (i.e. total inner message - 8)
-//   [8]  u32 LE message type
-//   [12] u16 LE 0x1000, [14] u16 LE 0
-//   [16] u32 LE 1
-//   [20] u32 LE a
-//   [24] u32 LE b
-//   [28] u32 LE c
-//   [32] ... Annex-B H.264 access unit
-//
-// All values are configurable through DeviceSelector so they can be tuned
-// live once proto-re finalizes the spec.
+// 设备发往主机的报告结构相同，负载为 JSON 文本。
 #pragma once
 
 #include <cstddef>
@@ -75,7 +46,7 @@ inline void write_outer_header(uint8_t* p, uint8_t report_id,
   write_be32(p + 1, static_cast<uint32_t>(payload_len));
   write_be32(p + 5, param3);
   write_be32(p + 9, param4);
-  // bytes 13..15 stay zero
+  // 第 13 到 15 字节保持为零
 }
 
 inline bool parse_outer_header(const uint8_t* p, size_t len, OuterHeader* out,
@@ -133,15 +104,7 @@ inline bool parse_inner_header(const uint8_t* p, size_t len, InnerHeader* out,
   return true;
 }
 
-// Ugreen / "mode B" inner header (provisional; reverse engineering ongoing):
-//   [0..4)  magic: "RRIM" or "TADV"
-//   [4..8)  u32 LE length (payload_len + 24, same convention as app mode)
-//   [8..12) u32 LE message type
-//   [12..16) u32 LE sequence
-//   [16..20) u32 LE a
-//   [20..24) u32 LE b
-//   [24..28) u32 LE c
-//   [28..32) u32 LE 0
+// 早期网络传输使用的外层头部构建函数，当前代码不使用。
 inline std::vector<uint8_t> build_ugreen_video_message(
     const uint8_t* annexb, size_t len, uint32_t seq, uint32_t msg_type,
     const char magic[4], uint32_t a, uint32_t b, uint32_t c) {
@@ -158,9 +121,8 @@ inline std::vector<uint8_t> build_ugreen_video_message(
   return message;
 }
 
-// Video message builder: inner header + Annex-B access unit.
-// With include_payload_len the TCP-builder layout is used: a trailing u32
-// payload length at offset 32 (36-byte header, payload at 36).
+// 早期网络传输的视频消息构建函数，当前 USB 视频通道不使用。
+// include_payload_len 为真时在偏移 32 处追加四字节负载长度。
 inline std::vector<uint8_t> build_video_message(
     const uint8_t* annexb, size_t len, uint32_t seq, uint32_t msg_type,
     uint32_t field_one, uint32_t a, uint32_t b, uint32_t c, bool magic_1000,

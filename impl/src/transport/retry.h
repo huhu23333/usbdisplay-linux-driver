@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Generic "attempt -> reset -> retry" state machine used for the USB session
-// auto-reset logic. Kept independent of libusb so it can be unit tested.
+// 通用的尝试、复位、重试状态机，供 USB 会话自动复位使用。
+// 该模块不依赖 libusb，便于进行单元测试。
 #pragma once
 
 #include <functional>
@@ -11,22 +11,20 @@ namespace transport {
 
 struct ResetRetryPolicy {
   bool auto_reset = true;
-  // Number of reset+retry cycles after the initial attempt (verified flow uses
-  // 3; total attempts = max_reset_attempts + 1).
+  // 首次尝试之后允许的复位重试次数，总尝试次数为该值加一。
   int max_reset_attempts = 3;
-  // How long to wait for the device to re-enumerate after a reset.
+  // 复位后等待设备重新枚举的时长。
   int reset_wait_ms = 5000;
 };
 
 struct ResetRetryCallbacks {
-  // One open+handshake attempt. Returns false and sets the error on failure.
+  // 执行一次打开与握手尝试，失败时返回假并写入错误信息。
   std::function<bool(std::string*)> attempt;
-  // Reset + re-discover step between attempts.
+  // 两次尝试之间的复位与重新发现步骤。
   std::function<bool(std::string*)> reset;
-  // Called before each reset: (reset_attempt_number, last_attempt_error).
+  // 每次复位前调用，参数为复位序号与上一次失败原因。
   std::function<void(int reset_attempt, const std::string& last_error)> log;
-  // Optional: return true for errors where resetting cannot help (e.g.
-  // permission denied), stopping the retry loop immediately.
+  // 可选回调，对无法通过复位解决的错误返回真以立即停止重试。
   std::function<bool(const std::string& error)> is_fatal;
 };
 

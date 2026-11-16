@@ -1,22 +1,16 @@
 // SPDX-License-Identifier: MIT
-// usbdisplay_send - push Annex-B H.264 (and optional WAV audio) to the
-// Actions Micro USB Display receiver using the *verified* protocol
-// (USB_PROTOCOL_VERIFIED.md / 1.pcapng).
+// 把 Annex-B 形式的 H.264 码流与可选的 WAV 音频发送到 USB Display 接收器。
 //
-// Transport (USB mode):
-//   control : /dev/hidraw IF0, HID report id 1, 4096-byte reports, JSON-RPC
-//   video   : libusb EP2 OUT on interface 1, 4096-byte URBs
-//   audio   : ALSA plughw:USBDISPLAY,0 (48 kHz stereo S16)
+// USB 模式使用三条通道：
+// 控制通道为 IF0 的 hidraw 节点，报告编号 1，报告长度 4096 字节，承载 JSON-RPC。
+// 视频通道为接口 1 的端点 2 输出方向，由 libusb 发送 4096 字节 URB。
+// 音频通道为 ALSA 设备 plughw:USBDISPLAY,0，48 kHz 双声道 16 位小端。
 //
-// The video message of one frame is: first URB with [0]=2, BE32 frame length
-// (including Annex-B start codes), BE32 width/height at offsets 8/12, then the
-// first 4080 H.264 bytes at offset 16; continuation URBs carry zeros in
-// [1..15] and the next 4080 bytes at offset 16.
+// 每帧对应一条或多条 URB。首条 URB 包含报告编号、大端序帧长度、宽度与高度，
+// 偏移 16 起为前 4080 字节数据；后续 URB 头部全为零，偏移 16 起为后续数据。
 //
-// Frame pacing follows the stream's real frame rate (SPS VUI
-// num_units_in_tick/time_scale or --fps) on an absolute CLOCK_MONOTONIC base.
-// The default is a single sequential pass; looping requires an IDR-first stream
-// and restarts the session.
+// 发送节奏按码流实际帧率控制，帧率来自 SPS 的 VUI 参数或命令行指定，
+// 调度基于单调时钟的绝对时间。默认只按顺序播放一遍。
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -52,6 +46,9 @@ struct Options {
   std::string dump_reports;  // dry run: write the 4096-byte video URBs
   std::string control_dump_reports;
   std::string alsa_device = "plughw:USBDISPLAY,0";
+  std::string audio_backend = "auto";
+  std::string pulse_sink;
+  bool restore_default_sink = false;
   std::string usb_transfer = "auto";  // auto|interrupt|bulk
   std::vector<std::string> init_commands;
   uint16_t port = 0;
@@ -74,6 +71,7 @@ struct Options {
   bool no_control = false;
   bool no_config = false;
   bool no_audio = false;
+  bool no_video = false;
   bool no_handshake = false;
   bool auto_reset = true;
   int reset_retries = 3;
@@ -110,7 +108,11 @@ void print_usage() {
       "  --init-json JSON       raw JSON command sent after start (repeatable)\n"
       "  --inject-aud           prepend a default AUD to AUs that lack one\n"
       "  --alsa-device DEV      ALSA PCM (default plughw:USBDISPLAY,0)\n"
+      "  --audio-backend MODE   auto、alsa 或 pulse（默认 auto）\n"
+      "  --pulse-sink NAME      指定 PulseAudio sink，留空时自动查找 USB 设备\n"
+      "  --restore-default-sink 允许恢复启动时保存的默认 sink（默认只读记录）\n"
       "  --no-audio             do not play WAV audio\n"
+      "  --no-video             control handshake + audio only, no video frames\n"
       "  --no-control           do not open the IF0 control channel\n"
       "  --sink tcp|udp|loopback|null   use the legacy Wi-Fi IP path\n"
       "  --wire legacy-v1|rtp   IP wire profile (default legacy-v1)\n"
@@ -158,7 +160,7 @@ std::vector<uint8_t> make_synthetic_au(int index, int idr_interval,
                                        uint16_t width, uint16_t height) {
   using namespace usbdisplay;
   std::vector<uint8_t> au;
-  // Verified streams start every frame with an AUD (00 00 00 01 09 10).
+  // 每帧以 AUD 起始。
   append_start_code(&au);
   au.push_back(0x09);
   au.push_back(0x10);
@@ -168,8 +170,7 @@ std::vector<uint8_t> make_synthetic_au(int index, int idr_interval,
     return std::vector<uint8_t>(n, value);
   };
   if (idr) {
-    // A syntactically valid SPS with VUI 60 fps so the fps-autodetect path is
-    // exercised offline too.
+    // 生成带 60 帧每秒 VUI 参数的 SPS，供帧率自动识别路径使用。
     const std::vector<uint8_t> sps =
         proto::h264::make_test_sps(width, height, 1, 120);
     append_start_code(&au);
@@ -265,7 +266,7 @@ void print_stats(const usbdisplay::Stats& s) {
       static_cast<unsigned long long>(s.uptime_ms));
 }
 
-// Absolute CLOCK_MONOTONIC scheduling with a sub-millisecond final sleep.
+// 基于单调时钟的绝对时间调度，末尾休眠精度优于一毫秒。
 void sleep_until_us(uint64_t target_us) {
   for (;;) {
     const uint64_t now = usbdisplay::mono_us();
@@ -315,6 +316,12 @@ int main(int argc, char** argv) {
       if (!next(&options.control_dump_reports)) return 2;
     } else if (arg == "--alsa-device") {
       if (!next(&options.alsa_device)) return 2;
+    } else if (arg == "--audio-backend") {
+      if (!next(&options.audio_backend)) return 2;
+    } else if (arg == "--pulse-sink") {
+      if (!next(&options.pulse_sink)) return 2;
+    } else if (arg == "--restore-default-sink") {
+      options.restore_default_sink = true;
     } else if (arg == "--usb-transfer") {
       if (!next(&options.usb_transfer)) return 2;
     } else if (arg == "--init-json") {
@@ -391,6 +398,8 @@ int main(int argc, char** argv) {
       options.no_config = true;
     } else if (arg == "--no-audio") {
       options.no_audio = true;
+    } else if (arg == "--no-video") {
+      options.no_video = true;
     } else if (arg == "--no-handshake") {
       options.no_handshake = true;
     } else if (arg == "--no-auto-reset") {
@@ -428,18 +437,28 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, on_signal);
   std::signal(SIGTERM, on_signal);
 
-  if (options.h264_path.empty() && options.synthetic_frames <= 0) {
+  if (options.no_video) {
+    if (!options.live) {
+      std::fprintf(stderr, "--no-video requires --live\n");
+      return 2;
+    }
+    if (options.wav_path.empty() || options.no_audio) {
+      std::fprintf(stderr,
+                   "--no-video requires --wav and must not use --no-audio\n");
+      return 2;
+    }
+  } else if (options.h264_path.empty() && options.synthetic_frames <= 0) {
     std::fprintf(stderr, "need --h264 FILE or --synthetic-frames N\n");
     print_usage();
     return 2;
   }
 
-  // ---- load video and preserve Annex-B access units ----
+  // 读取视频并保留 Annex-B 访问单元。
   std::vector<uint8_t> stream;
   std::vector<std::vector<uint8_t>> owned_aus;
   std::vector<proto::annexb::AccessUnit> aus;
   std::string err;
-  if (!options.h264_path.empty()) {
+  if (!options.no_video && !options.h264_path.empty()) {
     if (!read_file(options.h264_path, &stream, &err)) {
       std::fprintf(stderr, "%s\n", err.c_str());
       return 1;
@@ -449,8 +468,7 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "%s\n", err.c_str());
       return 1;
     }
-    // Root cause of the earlier black screen: AUs must keep the original
-    // 00 00 00 01 start codes. Validate before doing anything else.
+    // 访问单元必须保留原始 00 00 00 01 起始码，发送前逐一校验。
     for (size_t i = 0; i < aus.size(); ++i) {
       if (!has_start_code(aus[i].data, aus[i].size)) {
         std::fprintf(stderr,
@@ -482,7 +500,7 @@ int main(int argc, char** argv) {
                   " access units that lacked one");
       }
     }
-  } else {
+  } else if (!options.no_video) {
     std::vector<std::vector<uint8_t>> synthetic;
     synthetic.reserve(static_cast<size_t>(options.synthetic_frames));
     for (int i = 0; i < options.synthetic_frames; ++i) {
@@ -507,16 +525,19 @@ int main(int argc, char** argv) {
       }
     }
   }
-  if (aus.empty()) {
+  if (!options.no_video && aus.empty()) {
     std::fprintf(stderr, "no access units to send\n");
     return 1;
   }
 
-  // ---- frame rate: --fps > SPS VUI > 60 fallback ----
-  double fps = 0.0;
-  std::string fps_source = "--fps";
-  if (options.fps != 0) {
+  // 帧率优先取命令行参数，其次取 SPS 的 VUI 参数，最后回退到 60。
+  double fps = 60.0;
+  std::string fps_source = "--no-video";
+  if (options.no_video) {
+    // 纯音频模式不解析视频帧率。
+  } else if (options.fps != 0) {
     fps = options.fps;
+    fps_source = "--fps";
   } else {
     double vui_fps = 0.0;
     proto::h264::SpsInfo sps_info;
@@ -551,7 +572,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  // ---- load audio ----
+  // 读取音频。
   AudioData audio;
   if (!load_audio(options, &audio, &err)) {
     std::fprintf(stderr, "%s\n", err.c_str());
@@ -568,7 +589,7 @@ int main(int argc, char** argv) {
               std::to_string(audio.channels) + "ch");
   }
 
-  // ---- select transport ----
+  // 选择传输方式。
   enum class RunMode { UsbLive, UsbDry, Ip };
   RunMode run_mode = RunMode::UsbDry;
   MediaTransport ip_transport = MediaTransport::Tcp;
@@ -611,6 +632,10 @@ int main(int argc, char** argv) {
   selector.auto_reset_wait_ms = options.reset_wait_ms;
   selector.reset_on_exit = options.reset_on_exit;
   selector.alsa_device = options.alsa_device;
+  selector.audio_backend = options.audio_backend;
+  selector.pulse_sink = options.pulse_sink;
+  selector.restore_default_sink = options.restore_default_sink;
+  selector.disable_video = options.no_video;
   if (options.port != 0) selector.video_port = options.port;
   if (options.audio_port != 0) selector.audio_port = options.audio_port;
 
@@ -620,6 +645,7 @@ int main(int argc, char** argv) {
       selector.mode = LinkMode::Auto;
       selector.disable_control = options.no_control;
       selector.enable_audio = !options.wav_path.empty() && !options.no_audio;
+      selector.require_audio = options.no_video;
       selector.send_handshake = !options.no_handshake;
       selector.require_handshake = !options.no_handshake;
       selector.send_stream_config = false;
@@ -644,17 +670,28 @@ int main(int argc, char** argv) {
   }
 
   VideoConfig video;
-  video.codec = Codec::H264;
-  video.width = options.width;
-  video.height = options.height;
-  video.fps = static_cast<uint16_t>(std::lround(fps));
-  video.bitrate_bps = options.bitrate;
+  if (!options.no_video) {
+    video.codec = Codec::H264;
+    video.width = options.width;
+    video.height = options.height;
+    video.fps = static_cast<uint16_t>(std::lround(fps));
+    video.bitrate_bps = options.bitrate;
+  } else {
+    video.width = 0;
+    video.height = 0;
+    video.fps = 0;
+    video.bitrate_bps = 0;
+  }
 
   AudioConfig audio_config;
   if (!audio.samples.empty()) {
     audio_config.sample_rate = audio.sample_rate;
     audio_config.channels = audio.channels;
     audio_config.format = AudioFormat::PCM_S16LE;
+  } else {
+    audio_config.sample_rate = 0;
+    audio_config.channels = 0;
+    audio_config.frame_ms = 0;
   }
 
   Controller controller;
@@ -682,6 +719,9 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "start failed: %s\n", err.c_str());
     controller.close();
     return 1;
+  }
+  if (options.no_video) {
+    std::printf("audio-only: 设备在没有视频输入时可能不输出音频\n");
   }
   const char* mode_name = run_mode == RunMode::UsbLive
                               ? "usb-live"
@@ -715,7 +755,39 @@ int main(int argc, char** argv) {
     }
   }
 
-  // ---- absolute-monotonic paced, single sequential pass by default ----
+  // 纯音频模式：只推音频，按 20ms 分片控制节奏。
+  if (options.no_video) {
+    const uint64_t audio_start_us = mono_us();
+    uint64_t chunk_index = 0;
+    uint64_t chunks_sent = 0;
+    while (!g_stop) {
+      if (options.duration_sec > 0.0 &&
+          (mono_us() - audio_start_us) / 1e6 >= options.duration_sec) {
+        break;
+      }
+      if (chunk_index >= audio.total_chunks) {
+        if (!options.loop) break;
+        chunk_index = 0;
+      }
+      const uint64_t target_us = audio_start_us + chunks_sent * 20000ULL;
+      if (!options.no_pace) sleep_until_us(target_us);
+      const auto chunk = audio.chunk(chunk_index);
+      if (chunk.empty()) break;
+      if (!controller.push_audio(chunk.data(),
+                                 chunk.size() * sizeof(int16_t),
+                                 chunks_sent * 20000ULL, &err)) {
+        std::fprintf(stderr, "push_audio failed: %s\n", err.c_str());
+        break;
+      }
+      ++chunk_index;
+      ++chunks_sent;
+    }
+    controller.stop();
+    controller.close();
+    return 0;
+  }
+
+  // 按绝对时间控制节奏，默认顺序播放一遍。
   const uint64_t start_us = mono_us();
   const double period_us = 1000000.0 / fps;
   uint64_t frames_sent = 0;
@@ -723,6 +795,8 @@ int main(int argc, char** argv) {
   int pass = 0;
   uint64_t audio_chunks_sent = 0;
   uint64_t last_stats_us = start_us;
+  bool video_failed = false;
+  bool audio_failed = false;
   bool done = false;
   while (!done && !g_stop) {
     if (options.duration_sec > 0.0 &&
@@ -735,8 +809,7 @@ int main(int argc, char** argv) {
         done = true;
         break;
       }
-      // Looping requires an IDR-first stream and a fresh session so the
-      // decoder reference state is rebuilt.
+      // 循环播放要求首帧为 IDR，并重新建立会话以重置解码状态。
       if (options.loop) {
         log::info("loop: restarting session at pass " + std::to_string(pass));
         controller.stop();
@@ -753,25 +826,45 @@ int main(int argc, char** argv) {
         start_us + static_cast<uint64_t>(std::llround(
                        static_cast<double>(frames_sent) * period_us));
     if (!options.no_pace) sleep_until_us(target_us);
-    if (!controller.push_video(au.data, au.size, target_us - start_us,
+    // 首帧音频与首帧视频同时开始，避免音频设备打开后仍有一段时间静音。
+    if (frames_sent == 0 && !audio.samples.empty() && !audio_failed &&
+        !g_stop) {
+      const auto first_chunk = audio.chunk(0);
+      if (!first_chunk.empty() &&
+          controller.push_audio(first_chunk.data(),
+                                first_chunk.size() * sizeof(int16_t), 0, &err)) {
+        ++audio_chunks_sent;
+      } else {
+        audio_failed = true;
+        std::fprintf(stderr, "push_audio failed: %s\n", err.c_str());
+      }
+    }
+    if (!video_failed &&
+        !controller.push_video(au.data, au.size, target_us - start_us,
                                au.keyframe, &err)) {
       std::fprintf(stderr, "push_video failed at frame %llu: %s\n",
                    static_cast<unsigned long long>(frames_sent), err.c_str());
-      break;
+      video_failed = true;
     }
     ++frames_sent;
     ++pass_frames;
+    if (video_failed && audio.samples.empty()) {
+      std::fprintf(stderr, "video failed and no audio to continue\n");
+      break;
+    }
 
-    // Audio: send chunks whose timeline is due before the next frame.
-    if (!audio.samples.empty()) {
-      const uint64_t next_frame_us = target_us +
-                                     static_cast<uint64_t>(period_us);
-      while (audio_chunks_sent * 20000ULL < next_frame_us) {
+    // 发送时间线位于下一帧之前的音频分片。
+    if (!audio.samples.empty() && !audio_failed) {
+      const uint64_t next_frame_rel_us = static_cast<uint64_t>(
+          std::llround(static_cast<double>(frames_sent) * period_us));
+      while (audio_chunks_sent < audio.total_chunks &&
+             audio_chunks_sent * 20000ULL < next_frame_rel_us) {
         const auto chunk = audio.chunk(audio_chunks_sent);
         if (chunk.empty() || g_stop) break;
         if (!controller.push_audio(chunk.data(), chunk.size() * sizeof(int16_t),
                                    audio_chunks_sent * 20000ULL, &err)) {
           std::fprintf(stderr, "push_audio failed: %s\n", err.c_str());
+          audio_failed = true;
           break;
         }
         ++audio_chunks_sent;

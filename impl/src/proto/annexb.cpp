@@ -33,9 +33,7 @@ bool split_access_units(const uint8_t* data, size_t len,
 
   auto flush = [&]() {
     if (!have_cur || !cur.has_vcl) {
-      // Keep parameter sets that were not followed by a picture (e.g. tail
-      // SPS/PPS) attached to nothing; drop them to avoid emitting a
-      // zero-picture AU.
+      // 丢弃末尾没有跟图像的参数集，避免产生空访问单元。
       have_cur = false;
       return;
     }
@@ -65,7 +63,7 @@ bool split_access_units(const uint8_t* data, size_t len,
       if (cur.has_vcl && first_mb_zero) boundary = true;
       (void)nal_header;
     } else if (cur.has_vcl) {
-      // Parameter set / SEI after a coded picture belongs to the next AU.
+      // 编码图像之后的参数集与 SEI 属于下一个访问单元。
       boundary = true;
     }
 
@@ -90,7 +88,7 @@ bool split_access_units(const uint8_t* data, size_t len,
     cur.nals.push_back(nal);
   }
   flush();
-  // Drop trailing builder state handled in flush.
+  // 末尾状态已在刷新步骤中处理。
   if (out->empty()) {
     if (err) *err = "annexb: no access unit with VCL data found";
     return false;

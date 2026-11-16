@@ -12,7 +12,7 @@
 int main() {
   using namespace usbdisplay;
   {
-    // Verified outer header: [rid][BE32 payload_len][BE32 a3][BE32 a4][3 pad].
+    // 外层头部：报告编号、大端序负载长度、参数三、参数四与三个零字节。
     uint8_t header[hid::kOuterHeaderSize] = {0};
     hid::write_outer_header(header, 1, 100, 0x11223344, 0x55667788);
     CHECK(header[0] == 1);
@@ -28,8 +28,7 @@ int main() {
     CHECK(!hid::parse_outer_header(header, 8, &parsed, &err));
   }
   {
-    // 10000-byte message in 4096-byte reports: 4080 payload bytes per report,
-    // every report carries the header with its own chunk length.
+    // 一万字节消息拆分为 4096 字节报告，每个报告携带自己的头部与负载分片。
     std::vector<uint8_t> payload(10000);
     for (size_t i = 0; i < payload.size(); ++i) {
       payload[i] = static_cast<uint8_t>(i * 7 + 3);
@@ -41,7 +40,7 @@ int main() {
     CHECK(reports.size() == 3);
     CHECK(reports[0].size() == 4096);
     CHECK(reports[0][0] == 1);
-    // Verified app framing repeats the TOTAL payload length in every report.
+    // 每个报告都写入整条消息的总负载长度。
     CHECK(read_be32(reports[0].data() + 1) == 10000);
     CHECK(read_be32(reports[1].data() + 1) == 10000);
     CHECK(read_be32(reports[2].data() + 1) == 10000);
@@ -56,7 +55,7 @@ int main() {
     CHECK(reassembled == payload);
   }
   {
-    // param3/param4 are written in the first report only.
+    // 参数三与参数四只写入首个报告。
     std::vector<uint8_t> payload(9000, 0x33);
     std::vector<std::vector<uint8_t>> reports;
     std::string err;
@@ -76,7 +75,7 @@ int main() {
     CHECK(read_be32(reports[1].data() + 1) == 20000);
   }
   {
-    // Smaller chunk budget.
+    // 较小的分片长度。
     std::vector<uint8_t> payload(2500, 0x42);
     std::vector<std::vector<uint8_t>> reports;
     std::string err;
@@ -88,7 +87,7 @@ int main() {
     CHECK(read_be32(reports[2].data() + 1) == 2500);
   }
   {
-    // Ugreen mode B outer framing: 14-byte little-endian header.
+    // Ugreen 外层格式使用 14 字节小端序头部。
     std::vector<uint8_t> payload(5000, 0x5A);
     std::vector<std::vector<uint8_t>> reports;
     std::string err;
@@ -106,7 +105,7 @@ int main() {
     CHECK(read_le16(reports[1].data() + 12) == 5000 - (4096 - 14));
   }
   {
-    // Inner 32-byte video header + payload.
+    // 32 字节视频内层头部与负载。
     const uint8_t annexb[] = {0, 0, 0, 1, 0x65, 0x88, 0xAA};
     const auto message = hid::build_video_message(annexb, sizeof(annexb), 7,
                                                   0x1234, 1, 2, 3, 4, true);
@@ -121,7 +120,7 @@ int main() {
     CHECK(read_le32(message.data() + 28) == 4);
     CHECK(std::memcmp(message.data() + hid::kInnerHeaderSize, annexb,
                       sizeof(annexb)) == 0);
-    // 36-byte inner header variant with the trailing payload-length field.
+    // 36 字节内层头部变体，末尾附带负载长度。
     const auto message36 = hid::build_video_message(
         annexb, sizeof(annexb), 7, 0x1234, 1, 2, 3, 4, true, true);
     CHECK(message36.size() == 36 + sizeof(annexb));
@@ -134,7 +133,7 @@ int main() {
     CHECK(!hid::parse_inner_header(message.data(), 4, &inner, &err));
   }
   {
-    // Ugreen inner header (provisional).
+    // Ugreen 内层头部。
     const uint8_t annexb[] = {0, 0, 0, 1, 0x65};
     const auto message = hid::build_ugreen_video_message(
         annexb, sizeof(annexb), 11, 3, "TADV", 5, 6, 7);
@@ -149,7 +148,7 @@ int main() {
     CHECK(std::memcmp(message.data() + 32, annexb, sizeof(annexb)) == 0);
   }
   {
-    // Report dump round-trip.
+    // 转储文件读写往返。
     const std::string path = "/tmp/usbdisplay_test_hid_dump.bin";
     hid::ReportDumpWriter writer;
     std::string err;
@@ -171,7 +170,7 @@ int main() {
     ::remove(path.c_str());
   }
   {
-    // Descriptor of IF0 (hidraw4): report 1 has 4095 data bytes, feature 0x20.
+    // IF0 报告描述符：报告编号 1 的数据长度为 4095 字节。
     const std::vector<uint8_t> if0 = {
         0x06, 0xFF, 0xFF, 0x09, 0x00, 0xA1, 0x01, 0x85, 0x01, 0x15, 0x00, 0x25,
         0xFF, 0x19, 0x00, 0x29, 0xFF, 0x75, 0x08, 0x96, 0xFF, 0x0F, 0x81, 0x02,
@@ -189,7 +188,7 @@ int main() {
     CHECK(sizes.feature[0x20] == 2);
     CHECK(sizes.output[1] + 1 == 4096);
 
-    // Descriptor of IF1 (hidraw5): report 2 has 12287 data bytes.
+    // IF1 报告描述符：报告编号 2 的数据长度为 12287 字节。
     const std::vector<uint8_t> if1 = {
         0x06, 0xFF, 0xFF, 0x09, 0x00, 0xA1, 0x01, 0x85, 0x02, 0x15, 0x00, 0x25,
         0xFF, 0x19, 0x00, 0x29, 0xFF, 0x75, 0x08, 0x96, 0xFF, 0x2F, 0x81, 0x02,

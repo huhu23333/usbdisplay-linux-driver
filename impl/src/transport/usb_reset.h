@@ -1,11 +1,8 @@
 // SPDX-License-Identifier: MIT
-// USB device reset / re-enumeration helpers for session restart.
+// USB 设备复位与重新枚举工具。
 //
-// The receiver firmware only accepts a session after a fresh enumeration, so a
-// libusb_reset_device() followed by re-discovery is used instead of asking the
-// operator to unplug/replug (verified in work/hw/reset_test.py: after reset the
-// device re-enumerates with a new address and heartbeats/app-launched get ACKed
-// again).
+// 设备固件只接受重新枚举后的会话，因此调用 libusb_reset_device 后重新发现设备，
+// 无需人工拔插。
 #pragma once
 
 #include <cstdint>
@@ -14,13 +11,11 @@
 namespace usbdisplay {
 namespace transport {
 
-// Opens the device (no interfaces claimed), calls libusb_reset_device and
-// closes it. Any hidraw handles / claimed interfaces in this process must be
-// closed first.
+// 打开设备但不声明接口，调用 libusb_reset_device 后关闭。
+// 调用前必须关闭本进程内的 hidraw 句柄与已声明的接口。
 bool usb_reset_device(uint16_t vid, uint16_t pid, std::string* err);
 
-// Waits until the device shows up again after a reset (it may briefly
-// disappear and re-enumerate with a different USB address).
+// 等待复位后的设备重新出现，期间设备可能短暂消失并以新的 USB 地址重新枚举。
 bool wait_for_usb_device(uint16_t vid, uint16_t pid, int timeout_ms,
                          std::string* err);
 

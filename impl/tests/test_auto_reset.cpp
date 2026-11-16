@@ -7,7 +7,7 @@
 int main() {
   using namespace usbdisplay::transport;
   {
-    // Fail twice, then succeed: two resets, three attempts.
+    // 前两次失败后成功，应执行两次复位、三次尝试。
     int attempts = 0;
     int resets = 0;
     int logs = 0;
@@ -39,7 +39,7 @@ int main() {
     CHECK(last_logged.find("isAllowed") != std::string::npos);
   }
   {
-    // auto_reset disabled: single attempt, no reset.
+    // 关闭自动复位时只尝试一次，不执行复位。
     int attempts = 0;
     int resets = 0;
     ResetRetryPolicy policy;
@@ -61,7 +61,7 @@ int main() {
     CHECK(result.error == "handshake failed");
   }
   {
-    // Exhausted retries: initial attempt + max_reset_attempts resets.
+    // 重试次数耗尽时，总尝试次数为首次加上最大复位次数。
     int attempts = 0;
     int resets = 0;
     ResetRetryPolicy policy;
@@ -84,7 +84,7 @@ int main() {
     CHECK(result.error == "claim busy");
   }
   {
-    // Fatal error (e.g. permission denied) stops immediately without reset.
+    // 权限错误等致命失败立即停止，不执行复位。
     int resets = 0;
     ResetRetryPolicy policy;
     ResetRetryCallbacks callbacks;
@@ -105,7 +105,7 @@ int main() {
     CHECK(resets == 0);
   }
   {
-    // Reset itself fails: report the reset error, stop the loop.
+    // 复位本身失败时报告复位错误并停止循环。
     int attempts = 0;
     int resets = 0;
     ResetRetryPolicy policy;
@@ -127,7 +127,7 @@ int main() {
     CHECK(result.error == "device did not re-enumerate");
   }
   {
-    // Missing reset callback: no retry.
+    // 未提供复位回调时不重试。
     ResetRetryPolicy policy;
     ResetRetryCallbacks callbacks;
     callbacks.attempt = [](std::string* err) -> bool {

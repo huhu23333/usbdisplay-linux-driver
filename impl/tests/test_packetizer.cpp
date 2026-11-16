@@ -11,7 +11,7 @@ using namespace usbdisplay::proto;
 
 int main() {
   {
-    // Legacy splitting + golden header bytes.
+    // legacy 格式拆分与固定头部字节。
     PacketizeOptions options;
     options.max_payload = 1;
     Packetizer packetizer(options);
@@ -60,14 +60,14 @@ int main() {
     CHECK(reassembled.size() == 4 &&
           std::memcmp(reassembled.data(), payload, 4) == 0);
 
-    // A second AU continues the packet sequence.
+    // 第二个访问单元延续报文序号。
     std::vector<std::vector<uint8_t>> more;
     packetizer.packetize(payload, sizeof(payload), MediaKind::Video, 100, false,
                          8, more);
     CHECK(read_le32(more[0].data() + 8) == 4);
   }
   {
-    // TCP length prefix.
+    // TCP 长度前缀。
     PacketizeOptions options;
     options.length_prefix = true;
     options.max_payload = 2;
@@ -90,7 +90,7 @@ int main() {
     CHECK(parsed.kind == MediaKind::Audio && parsed.payload_len == 2);
   }
   {
-    // Legacy stream-config packet.
+    // legacy 流配置报文。
     PacketizeOptions options;
     Packetizer packetizer(options);
     std::vector<std::vector<uint8_t>> packets;
@@ -106,7 +106,7 @@ int main() {
                       parsed.payload_len) == "{\"type\":\"stream-config\"}");
   }
   {
-    // RTP: FU-A fragmentation of one large IDR NAL.
+    // RTP 对较大的 IDR NAL 单元进行 FU-A 分片。
     std::vector<uint8_t> au;
     au.push_back(0);
     au.push_back(0);
@@ -147,12 +147,11 @@ int main() {
       if (i + 1 == packets.size()) CHECK(parsed.flags & kFlagAuEnd);
       fragments += parsed.payload_len;
     }
-    // FU-A payloads contain the NAL body only (original header replaced by
-    // the FU indicator/header): 4-byte start code + 1-byte NAL header + body.
+    // FU-A 负载只包含 NAL 主体内容。
     CHECK(fragments == au.size() - 5);
   }
   {
-    // RTP: small NAL is emitted as a single-NAL packet.
+    // 较小的 NAL 单元使用单 NAL 打包。
     std::vector<uint8_t> au = {0, 0, 1, 0x41, 0x88, 0x01, 0x02};
     PacketizeOptions options;
     options.format = WireFormat::RtpAvc;
@@ -173,7 +172,7 @@ int main() {
     CHECK(parsed.payload_len == 4 && parsed.payload[0] == 0x41);
   }
   {
-    // Malformed packets are rejected.
+    // 格式错误的报文应被拒绝。
     uint8_t garbage[40] = {0};
     ParsedPacket parsed;
     std::string err;

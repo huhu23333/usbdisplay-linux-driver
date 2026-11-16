@@ -25,9 +25,7 @@ bool build_reports(const uint8_t* payload, size_t len, uint8_t report_id,
                    uint8_t ugreen_type, uint16_t ugreen_flags,
                    bool params_every_report) {
   out->clear();
-  // The ugreen "mode B" outer header is 14 bytes little-endian:
-  //   [0]=report id, [1]=type, [2..4)=flags u16,
-  //   [4..8)=seq u32, [8..12)=fraginfo u32, [12..14)=chunk length u16.
+  // Ugreen 外层头部共 14 字节，依次为报告编号、类型、标志、序号、分片信息与分片长度。
   const size_t header_size =
       framing == OuterFraming::App16 ? kOuterHeaderSize : 14;
   if (report_size <= header_size) {
@@ -51,8 +49,7 @@ bool build_reports(const uint8_t* payload, size_t len, uint8_t report_id,
     const size_t chunk = std::min(budget, len - offset);
     std::vector<uint8_t> report(report_size, 0);
     if (framing == OuterFraming::App16) {
-      // Verified app framing: every report repeats the TOTAL payload length;
-      // param3/param4 appear in the first report only (SendHIDVideo).
+      // 每个报告都写入总负载长度，参数三与参数四只出现在首个报告。
       const uint32_t p3 = (first || params_every_report) ? param3 : 0;
       const uint32_t p4 = (first || params_every_report) ? param4 : 0;
       write_outer_header(report.data(), report_id, len, p3, p4);
@@ -131,7 +128,7 @@ class HidrawReportSink : public ReportSink {
       return false;
     }
     const size_t raw_len = static_cast<size_t>(n);
-    // Some firmware builds answer with plain JSON instead of the framed reply.
+    // 部分固件直接返回 JSON 文本，不使用报告头部。
     const size_t start = (raw_len > 0 && buffer[0] == report_id_) ? 1 : 0;
     if (raw_len > start && (buffer[start] == '{' || buffer[start] == '[')) {
       size_t end = raw_len;

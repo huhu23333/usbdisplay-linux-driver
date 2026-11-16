@@ -127,8 +127,7 @@ bool JsonRpcClient::call(const std::string& method, const json::Value& params,
       if (result) *result = message.result;
       return true;
     }
-    // Notifications are dropped here; the Controller heartbeat thread owns
-    // notification handling.
+    // 此处丢弃通知消息，通知处理由控制器心跳线程负责。
   }
 }
 

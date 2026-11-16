@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: MIT
-// Offline HID report dump: lets us validate the exact report framing without
-// touching hardware (usbdisplay_send --dry-run --dump-reports FILE, then
-// fake_device --hid-dump FILE).
-//
-// File layout:
-//   magic  "USBDRPT1" (8 bytes)
-//   u32 LE report_size (total bytes per report including the report-id byte)
-//   records: u32 LE length, then `length` raw report bytes
+// 离线转储文件：用于在不访问硬件的情况下校验报文封装。
+// 首部为八字节魔数 "USBDRPT1"，随后四字节小端序报告长度。
+// 每条记录先写四字节小端序记录长度，再写该长度的原始报告内容。
 #pragma once
 
 #include <cstddef>

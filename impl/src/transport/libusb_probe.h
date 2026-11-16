@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Device discovery / descriptor dump via libusb. Read-only; the actual control
-// channel uses /dev/hidraw because the kernel HID driver normally owns the
-// interface (detaching it would need root on most systems).
+// 基于 libusb 的设备发现与描述符输出。控制通道使用 hidraw，
+// 视频通道使用 libusb 并解除内核对接口的绑定。
 #pragma once
 
 #include <cstdint>
@@ -46,8 +45,7 @@ std::vector<UsbDeviceInfo> enumerate_usb(std::string* err);
 bool find_usb_device(uint16_t vid, uint16_t pid, UsbDeviceInfo* out,
                      std::string* err);
 
-// Check whether this process can open the device (needed for the libusb EP2
-// video path). err carries a chmod/udev hint on permission failure.
+// 检查本进程能否打开设备，用于 libusb 视频通道；失败时给出权限提示。
 bool usb_device_accessible(uint16_t vid, uint16_t pid, std::string* err);
 
 const char* endpoint_type_name(uint8_t type);

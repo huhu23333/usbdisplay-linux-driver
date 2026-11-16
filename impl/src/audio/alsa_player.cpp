@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include "audio/alsa_player.h"
 
+#include <cerrno>
+
 #include "common/log.h"
+#include "common/util.h"
 
 #ifdef USBDISPLAY_HAVE_ALSA
 #include <alsa/asoundlib.h>
@@ -42,6 +45,8 @@ bool AlsaPlayer::open(const std::string& device, uint32_t sample_rate,
     ::snd_pcm_close(pcm);
     return false;
   }
+  // 使用非阻塞模式，避免 ALSA 缓冲满时播放线程无限期阻塞。
+  ::snd_pcm_nonblock(pcm, 1);
   pcm_ = pcm;
   device_ = device;
   sample_rate_ = sample_rate;
@@ -65,11 +70,20 @@ bool AlsaPlayer::write(const void* data, size_t bytes, std::string* err) {
   const size_t frames = bytes / frame_bytes;
   const uint8_t* p = static_cast<const uint8_t*>(data);
   size_t written = 0;
+  const uint64_t deadline = mono_ms() + 500;
   while (written < frames) {
     const snd_pcm_sframes_t n = ::snd_pcm_writei(
         static_cast<snd_pcm_t*>(pcm_),
         p + written * frame_bytes, frames - written);
     if (n < 0) {
+      if (n == -EAGAIN) {
+        if (mono_ms() >= deadline) {
+          if (err) *err = "ALSA 写入超时";
+          return false;
+        }
+        ::snd_pcm_wait(static_cast<snd_pcm_t*>(pcm_), 100);
+        continue;
+      }
       const int rc = ::snd_pcm_recover(static_cast<snd_pcm_t*>(pcm_),
                                        static_cast<int>(n), 1);
       if (rc < 0) {

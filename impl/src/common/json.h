@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Minimal JSON DOM used for the JSON-RPC 2.0 control channel.
-// No external dependencies. Supports null/bool/number/string/array/object.
+// 控制通道使用的精简 JSON 解析与生成，无外部依赖，
+// 支持空值、布尔值、数字、字符串、数组与对象。
 #pragma once
 
 #include <cstddef>
@@ -42,7 +42,7 @@ class Value {
   const std::map<std::string, Value>& members() const { return object_; }
   std::map<std::string, Value>& members() { return object_; }
 
-  // Object member access; returns nullptr when absent or not an object.
+  // 访问对象成员，成员不存在或对象类型不符时返回空指针。
   const Value* find(const std::string& key) const;
   Value* find(const std::string& key);
   const Value& operator[](const std::string& key) const;
@@ -67,7 +67,7 @@ class Value {
   static const Value& null_value();
 };
 
-// Convenience: parse and return the value for an object key as string.
+// 便捷函数：读取对象中指定键的字符串值。
 bool get_string(const Value& v, const std::string& key, std::string* out);
 
 }  // namespace json

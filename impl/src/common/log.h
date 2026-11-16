@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Process-wide logging/trace facilities. Tools set the level from the CLI;
-// the library user can replace the sink with set_trace() on Controller.
+// 进程级日志输出。工具通过命令行设置级别，
+// 库使用方可通过 Controller::set_trace 替换输出函数。
 #pragma once
 
 #include <string>

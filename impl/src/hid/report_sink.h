@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
-// HID report sinks: real /dev/hidraw, recording (offline dump) and null.
-// A sink sends one logical message as N fixed-size HID reports; payloads are
-// framed per hid_profile.h.
+// HID 报告通道实现：真实 hidraw、离线转储、空通道。
+// 每条逻辑消息按 hid_profile.h 的格式拆分为若干固定长度 HID 报告。
 #pragma once
 
 #include <cstddef>
@@ -13,8 +12,7 @@
 namespace usbdisplay {
 namespace hid {
 
-// Outer report framing. App16 is verified on hardware; Ugreen14 is the
-// alternative "mode B" framing being trialled (14-byte little-endian header).
+// 外层报告封装格式。App16 用于控制通道，Ugreen14 为早期网络传输格式，当前代码不使用。
 enum class OuterFraming : uint8_t { App16 = 0, Ugreen14 = 1 };
 
 class ReportSink {
@@ -23,11 +21,11 @@ class ReportSink {
   virtual bool open(std::string* err) = 0;
   virtual void close() = 0;
   virtual bool connected() const = 0;
-  // payload is the logical message (e.g. JSON text or a video inner message).
+  // 负载为整条逻辑消息，例如 JSON 文本。
   virtual bool send_message(const uint8_t* payload, size_t len,
                             uint32_t param3, uint32_t param4,
                             std::string* err) = 0;
-  // Receives one logical message payload. timed_out=true when no data arrived.
+  // 接收一条逻辑消息，超时未收到数据时 timed_out 置为真。
   virtual bool recv_message(std::string* payload, int timeout_ms,
                             bool* timed_out, std::string* err) = 0;
   virtual std::string describe() const = 0;
@@ -37,14 +35,13 @@ class ReportSink {
   virtual size_t reports_sent() const = 0;
   virtual size_t messages_sent() const = 0;
 
-  // Select the alternative outer framing for subsequent messages.
+  // 选择后续消息使用的外层封装格式。
   void set_ugreen_outer(uint8_t type, uint16_t flags) {
     ugreen_outer_ = true;
     ugreen_type_ = type;
     ugreen_flags_ = flags;
   }
-  // App16: write param3/param4 in every report (default: first report only,
-  // matching the app's SendHIDVideo).
+  // App16 格式下是否在每个报告中写入参数三与参数四，默认只写入首个报告。
   void set_params_every_report(bool every) { params_every_report_ = every; }
 
  protected:
@@ -71,11 +68,10 @@ std::unique_ptr<ReportSink> make_null_report_sink(uint8_t report_id,
                                                   size_t report_size,
                                                   size_t chunk_budget = 0);
 
-// Exposed for tests and tools: split a message into exact HID report buffers.
-// App16 layout (verified): every report has [rid][BE32 total payload len]
-// [BE32 param3][BE32 param4][3x00] + payload chunk at offset 16; param3/param4
-// are written in the first report only unless params_every_report is set.
-// For Ugreen14, param3/param4 carry the u32 seq and u32 fraginfo.
+// 供测试与工具使用：把一条消息拆分为固定长度 HID 报告。
+// App16 格式下每个报告都包含报告编号、大端序总负载长度、参数三、参数四和三个零字节，
+// 偏移 16 起为负载分片；参数三与参数四默认只写入首个报告。
+// Ugreen14 格式下参数三与参数四分别表示序号与分片信息。
 bool build_reports(const uint8_t* payload, size_t len, uint8_t report_id,
                    size_t report_size, bool header_per_chunk,
                    uint32_t param3, uint32_t param4,

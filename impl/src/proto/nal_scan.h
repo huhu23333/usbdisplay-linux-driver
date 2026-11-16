@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Internal: Annex-B NAL unit scanning shared by the Annex-B splitter and the
-// RTP packetizer.
+// Annex-B NAL 单元扫描，供访问单元拆分与 RTP 打包共用。
 #pragma once
 
 #include <cstddef>
@@ -19,14 +18,14 @@ struct NalRange {
   uint8_t type = 0;              // nal_unit_type
 };
 
-// Scan an Annex-B byte stream. Returns false when no start code was found.
+// 扫描 Annex-B 字节流，找不到起始码时返回假。
 bool scan_nal_units(const uint8_t* data, size_t len,
                     std::vector<NalRange>* out);
 
-// H.264 first_mb_in_slice == 0 test on the RBSP bytes after the NAL header.
+// 判断 NAL 负载中的 first_mb_in_slice 是否为零。
 bool first_mb_in_slice_is_zero(const uint8_t* nal_payload, size_t len);
 
-// NAL types considered VCL (coded slice).
+// 判断 NAL 类型是否属于编码切片。
 bool is_vcl_type(uint8_t type);
 
 }  // namespace detail

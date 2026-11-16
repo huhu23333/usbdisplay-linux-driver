@@ -11,7 +11,7 @@ bool scan_nal_units(const uint8_t* data, size_t len,
   if (data == nullptr || len < 3) return false;
 
   size_t i = 0;
-  // Find the first start code.
+  // 查找首个起始码。
   while (i + 3 <= len) {
     if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) break;
     ++i;
@@ -63,8 +63,7 @@ bool is_vcl_type(uint8_t type) { return type >= 1 && type <= 5; }
 
 bool first_mb_in_slice_is_zero(const uint8_t* p, size_t len) {
   if (p == nullptr || len == 0) return false;
-  // ue(v): count leading zero bits, then a 1 bit. value = 2^n - 1 + suffix.
-  // first_mb_in_slice == 0 => the very first bit is 1.
+  // 无符号指数哥伦布编码：先数前导零，再读到一，first_mb_in_slice 为零时首位即为一。
   return (p[0] & 0x80) != 0;
 }
 

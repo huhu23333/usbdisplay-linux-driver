@@ -10,8 +10,7 @@ int main() {
   using namespace usbdisplay;
   using namespace usbdisplay::proto;
   {
-    // Golden provisional legacy header: video, keyframe+AU end, stream 0,
-    // seq 42, frame 7, 3/2 split, au_size 4, pts 0x0102030405060708.
+    // legacy 头部固定字节：视频、关键帧与访问单元结束、流编号零、序号 42、帧号 7。
     uint8_t header[kLegacyHeaderSize] = {0};
     wire::write_legacy_header(header, MediaKind::Video,
                               static_cast<uint8_t>(kFlagKeyframe | kFlagAuEnd),

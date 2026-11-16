@@ -17,6 +17,7 @@ find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 pkg_check_modules(ALSA IMPORTED_TARGET alsa)
+pkg_check_modules(PULSE IMPORTED_TARGET libpulse)
 
 set(USBDISPLAY_SOURCES
   src/common/log.cpp
@@ -40,6 +41,14 @@ set(USBDISPLAY_SOURCES
   src/hid/report_dump.cpp
   src/hid/report_sink.cpp
   src/audio/alsa_player.cpp
+  src/audio/audio_pump.cpp
+  src/audio/audio_backend.cpp
+  src/audio/audio_open_retry.cpp
+  src/audio/default_sink_guard.cpp
+  src/audio/pulse_card.cpp
+  src/audio/pulse_discovery.cpp
+  src/audio/pulse_player.cpp
+  src/media_plan.cpp
   src/control/jsonrpc.cpp
   src/control/hid_channel.cpp
   src/control/hid_report_channel.cpp
@@ -64,9 +73,16 @@ if(ALSA_FOUND)
 else()
   message(STATUS "ALSA not found: USB audio playback disabled")
 endif()
+if(PULSE_FOUND)
+  target_link_libraries(usbdisplay PRIVATE PkgConfig::PULSE)
+  target_compile_definitions(usbdisplay PRIVATE USBDISPLAY_HAVE_PULSE=1)
+  message(STATUS "PulseAudio found: USB sink playback enabled")
+else()
+  message(STATUS "PulseAudio not found: PulseAudio playback disabled")
+endif()
 set_target_properties(usbdisplay PROPERTIES OUTPUT_NAME usbdisplay)
 
-# ---------------- tools ----------------
+# 工具程序
 add_executable(usbdisplay_diag tools/usbdisplay_diag.cpp)
 target_include_directories(usbdisplay_diag PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(usbdisplay_diag PRIVATE usbdisplay PkgConfig::LIBUSB)
@@ -91,10 +107,11 @@ add_executable(fake_device tools/fake_device.cpp)
 target_include_directories(fake_device PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(fake_device PRIVATE usbdisplay)
 
-# ---------------- tests ----------------
+# 测试程序
 enable_testing()
 
-foreach(t test_json test_util test_annexb test_wire test_packetizer test_wav test_hid test_usb_video test_h264_sps test_auto_reset)
+foreach(t test_json test_util test_annexb test_wire test_packetizer test_wav test_hid test_usb_video test_h264_sps test_auto_reset test_audio_pump test_audio_backend test_default_sink_guard test_pulse_card
+    test_audio_retry test_media_plan test_pulse_player)
   add_executable(${t} tests/${t}.cpp)
   target_link_libraries(${t} PRIVATE usbdisplay)
   target_include_directories(${t} PRIVATE
@@ -103,7 +120,7 @@ foreach(t test_json test_util test_annexb test_wire test_packetizer test_wav tes
   add_test(NAME ${t} COMMAND ${t})
 endforeach()
 
-# Cross-process loop test: fake_device <-> usbdisplay_send (TCP + UDP framing).
+# 跨进程测试：模拟接收器校验发送端生成的报文。
 find_program(BASH_EXECUTABLE bash)
 if(BASH_EXECUTABLE)
   add_test(NAME integration_loop_tcp
@@ -120,13 +137,13 @@ if(BASH_EXECUTABLE)
             ${CMAKE_BINARY_DIR} hid)
 endif()
 
-# ---------------- install ----------------
+# 安装规则
 include(GNUInstallDirs)
 install(TARGETS usbdisplay usbdisplay_diag usbdisplay_send usbdisplay_probe usbdisplay_json usbdisplay_audio fake_device
         ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-# One-time udev rule (kept in the repository tools/ directory; this project
-# does not install it into /etc automatically).
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../tools/99-usbdisplay.rules
+# udev 规则文件位于仓库 tools 目录，本工程不会自动写入 /etc。
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../tools/99-usbdisplay-usb.rules
+              ${CMAKE_CURRENT_SOURCE_DIR}/../tools/99-usbdisplay-audio-ignore.rules
         DESTINATION ${CMAKE_INSTALL_DATADIR}/usbdisplay OPTIONAL)

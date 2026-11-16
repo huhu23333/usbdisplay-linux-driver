@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Minimal RIFF/WAVE reader for the sender tool. Supports uncompressed PCM
-// (8/16/24/32-bit integer) and 32-bit float, including WAVE_FORMAT_EXTENSIBLE.
+// 发送工具使用的精简 RIFF/WAVE 读取器，支持未压缩 PCM 与 32 位浮点，
+// 包括 WAVE_FORMAT_EXTENSIBLE 格式。
 #pragma once
 
 #include <cstddef>
@@ -26,8 +26,8 @@ struct WavInfo {
 
 bool parse(const uint8_t* bytes, size_t len, WavInfo* out, std::string* err);
 
-// Convert to interleaved signed 16-bit little-endian. No resampling is done;
-// the caller must configure the device with the file's sample rate/channels.
+// 转换为交织排列的 16 位有符号小端采样，不做重采样，
+// 调用方需按文件中的采样率与声道数配置设备。
 bool to_s16le(const WavInfo& info, std::vector<int16_t>* out, std::string* err);
 
 }  // namespace wav

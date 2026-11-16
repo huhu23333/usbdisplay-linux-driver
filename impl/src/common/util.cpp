@@ -142,7 +142,7 @@ bool read_file(const std::string& path, std::vector<uint8_t>* out,
   f.seekg(0, std::ios::end);
   const std::streamoff size = f.tellg();
   if (size < 0) {
-    // Non-seekable pseudo files (procfs/sysfs): stream them instead.
+    // 无法定位的伪文件（procfs 与 sysfs）改为顺序读取。
     f.clear();
     f.seekg(0, std::ios::beg);
     std::ostringstream stream;

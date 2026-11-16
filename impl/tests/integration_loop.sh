@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Cross-process framing test.
-#   integration_loop.sh <build-dir> tcp|udp|rtp|hid
+# 跨进程封装测试。
+#   用法：integration_loop.sh <构建目录> tcp|udp|rtp|hid
 set -u
 
 BIN=${1:?usage: integration_loop.sh <build-dir> tcp|udp|rtp|hid}

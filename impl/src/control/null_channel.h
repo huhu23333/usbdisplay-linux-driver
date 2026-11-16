@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Control channel used for --dry-run / offline builds: sends are accepted and
-// logged, receives always time out.
+// 离线演练使用的空控制通道：发送被记录，接收总是超时。
 #pragma once
 
 #include "control/control_channel.h"

@@ -53,7 +53,7 @@ bool HidControlChannel::send_json(const std::string& json, std::string* err) {
         config_.report_id, reinterpret_cast<const uint8_t*>(json.data()),
         json.size(), config_.report_size, err);
   }
-  // Provisional chunked framing.
+  // 分片格式。
   size_t offset = 0;
   while (offset < json.size()) {
     const size_t chunk =
@@ -85,8 +85,7 @@ bool HidControlChannel::recv_json(std::string* json, int timeout_ms,
     if (timed_out) *timed_out = true;
     return false;
   }
-  // Input report: first byte is the report id (may be 0 on unnumbered
-  // devices). Trailing zero padding is stripped.
+  // 输入报告首字节为报告编号，末尾零填充会被去除。
   size_t start = 0;
   if (n > 1 && buffer[0] == config_.report_id) start = 1;
   size_t end = static_cast<size_t>(n);

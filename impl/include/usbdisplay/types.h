@@ -8,43 +8,41 @@
 
 namespace usbdisplay {
 
-// USB IDs of the Actions Micro USB Display receiver (HID control channel).
+// 接收器默认 USB 标识（控制通道所在设备）。
 constexpr uint16_t kDefaultVid = 0x1DE1;
 constexpr uint16_t kDefaultPid = 0xF201;
-// Default IP of the receiver when it exposes a USB network interface
-// (RNDIS/CDC-ECM). The other address seen in the Windows application is
-// 192.168.168.1; see PROTO_FACTS.md.
+// 网络传输模式的默认地址。USB 模式不使用该地址。
 constexpr const char* kDefaultDeviceHost = "192.168.203.1";
 
 enum class Codec : uint8_t { H264 = 0, HEVC = 1 };
 
-// Video wire framing variants (see README "live-test matrix").
+// 早期 HID 报告路径的视频封装模式，当前 USB 视频通道不使用。
 enum class FrameMode : uint8_t {
-  AppRaw = 0,    // app USB style: 16-byte outer header + raw Annex-B (no inner)
-  AppInner = 1,  // Wi-Fi style: 16-byte outer header + 32/36-byte inner header
-  Ugreen = 2,    // 14-byte LE outer header + 32-byte RRIM/TADV inner header
+  AppRaw = 0,
+  AppInner = 1,
+  Ugreen = 2,
 };
 
-// Video stream description handed to the receiver.
+// 视频流参数。
 struct VideoConfig {
   Codec codec = Codec::H264;
   uint16_t width = 1920;
   uint16_t height = 1080;
-  uint16_t fps = 60;  // verified capture runs at 60 fps
+  uint16_t fps = 60;
   uint32_t bitrate_bps = 8'000'000;
   bool fullscreen = false;
 };
 
 enum class AudioFormat : uint8_t {
-  PCM_S16LE = 0,  // interleaved signed 16-bit little-endian
-  PCM_F32LE = 1,  // interleaved 32-bit float little-endian
+  PCM_S16LE = 0,  // 交织排列的 16 位有符号小端采样
+  PCM_F32LE = 1,  // 交织排列的 32 位浮点小端采样
 };
 
 struct AudioConfig {
   uint32_t sample_rate = 48000;
   uint16_t channels = 2;
   AudioFormat format = AudioFormat::PCM_S16LE;
-  // Packetization duration for PCM->media packets.
+  // PCM 音频分组时长。
   uint16_t frame_ms = 20;
 };
 
@@ -54,7 +52,7 @@ enum class TraceLevel : int {
   Warn = 2,
   Info = 3,
   Debug = 4,
-  Wire = 5,  // dump every packet (hex)
+  Wire = 5,  // 输出每个报文的十六进制内容
 };
 
 enum class LinkMode : uint8_t {
@@ -63,130 +61,119 @@ enum class LinkMode : uint8_t {
   UsbOnly = 2,          // HID control only (diagnostic / handshake only)
 };
 
-// How media bytes are transported to the receiver.
+// 媒体传输方式。
 enum class MediaTransport : uint8_t {
   Tcp = 0,
   Udp = 1,
-  Loopback = 2,  // in-process sink, for tests / dry-run
-  Null = 3,      // count frames, send nothing
-  UsbHid = 4,    // real USB path: HID report channel on IF1 (video) + IF0 (control)
+  Loopback = 2,  // 进程内回环，供测试与离线演练使用
+  Null = 3,      // 只统计帧数与字节数，不发送数据
+  UsbHid = 4,    // USB 通道：控制通道使用 HID 接口零，视频通道使用 libusb 端点二
 };
 
-// Selects and locates the receiver.
+// 设备定位参数。
 struct DeviceSelector {
   LinkMode mode = LinkMode::Auto;
   uint16_t vid = kDefaultVid;
   uint16_t pid = kDefaultPid;
-  // Explicit /dev/hidrawN path for the control channel; empty = auto-discover
-  // by matching vid/pid in /sys/class/hidraw.
+  // 控制通道的 hidraw 节点路径，留空时按 VID/PID 自动发现。
   std::string hidraw_path;
-  // Receiver address for the media channel (USB network gadget or Wi-Fi).
+  // IP 网络传输路径的接收端地址，USB 模式不使用。
   std::string host = kDefaultDeviceHost;
-  // Optional local bind address / interface name (e.g. "192.168.203.2").
+  // IP 网络传输路径的本地绑定地址，留空表示由系统选择。
   std::string bind_address;
-  // 0 = use protocol defaults.
+  // 取值为零表示使用默认端口。
   uint16_t control_port = 0;
   uint16_t video_port = 0;
   uint16_t audio_port = 0;
   MediaTransport media_transport = MediaTransport::Tcp;
   bool use_udp_audio = true;
-  // Media wire format: "legacy-v1" (provisional EZDP header) or "rtp".
+  // IP 网络传输路径的封装格式，可选 legacy-v1 或 rtp。
   std::string wire_format = "legacy-v1";
-  // Max payload bytes per media packet (keep below path MTU for UDP).
+  // 每个媒体报文的最大负载字节数，UDP 传输时需小于路径 MTU。
   size_t max_payload = 1400;
   int control_timeout_ms = 3000;
   int connect_timeout_ms = 3000;
 
-  // ---- USB HID mode (the real device transport) ----
-  // Explicit /dev/hidraw nodes. Empty = auto-discover by USB interface number
-  // (IF0 = control, IF1 = video) from /sys/class/hidraw.
+  // USB 模式参数。
+  // 控制通道节点留空时按 USB 接口编号自动发现，IF0 为控制通道。
   std::string control_hidraw_path;
+  // 视频通道使用 libusb，不经过 hidraw，该字段仅为兼容保留。
   std::string video_hidraw_path;
-  // HID report framing. Report ID and total report length must match the
-  // device's HID report descriptor; defaults are the values measured on the
-  // real 1de1:f201 receiver (IF0: id 1/4096 B, IF1: id 2/12288 B).
+  // 控制通道的 HID 报告编号与报告长度，需与设备报告描述符一致。
   uint8_t control_report_id = 1;
   size_t control_report_size = 4096;
+  // 视频通道的报告编号与 URB 长度，默认使用 4096 字节。
   uint8_t video_report_id = 2;
-  // Verified video transport: libusb EP2 OUT writes of exactly 4096-byte URBs
-  // (despite the HID report descriptor advertising 12288). The name is kept
-  // for API compatibility; --report-size overrides the URB size.
   size_t video_report_size = 4096;
-  // Provisional: repeat the 16-byte outer header in every report instead of
-  // only the first report of a message.
+  // 每个报告都携带外层头部，供控制通道与历史测试使用。
   bool report_header_per_chunk = false;
-  // Inner 32-byte message header fields for video frames (provisional; the
-  // values are being confirmed from the reverse engineering).
-  uint32_t video_msg_type = 0;   // [8]  message type
-  uint32_t video_field_1 = 1;    // [16] constant 1
-  uint32_t video_field_a = 0;    // [20]
-  uint32_t video_field_b = 0;    // [24]
-  uint32_t video_field_c = 0;    // [28]
-  bool video_magic_1000 = true;  // [12] = 0x1000, [14] = 0
-  // Optional smaller payload chunk per report (0 = report_size - 16).
+  // 以下字段属于早期网络传输构建逻辑，当前 USB 视频通道不使用。
+  uint32_t video_msg_type = 0;
+  uint32_t video_field_1 = 1;
+  uint32_t video_field_a = 0;
+  uint32_t video_field_b = 0;
+  uint32_t video_field_c = 0;
+  bool video_magic_1000 = true;
   size_t video_chunk_payload = 0;
-  // Video framing mode and mode-specific fields.
-  // DEPRECATED (pre-verified-protocol experiments; ignored by the USB HID
-  // path, which now always uses the verified 4096-byte URB framing).
   FrameMode frame_mode = FrameMode::AppRaw;
-  // DEPRECATED
   bool video_inner_payload_len = false;
   uint8_t ugreen_type = 0;
   uint16_t ugreen_flags = 0;
   uint32_t ugreen_fraginfo = 0;
   std::string ugreen_magic = "RRIM";
-  uint32_t video_outer_param3 = 0;  // app mode header param3 (a3)
-  uint32_t video_outer_param4 = 0;  // app mode header param4 (a4)
-  // When true, open()/start() fail if no IF1 video hidraw node is found
-  // (used by --live so a missing device is an error, not a silent null sink).
+  uint32_t video_outer_param3 = 0;
+  uint32_t video_outer_param4 = 0;
+  // 兼容保留字段，当前未使用。
   bool require_video_hidraw = false;
-  // Do not open a control channel at all (video-only live streaming).
+  // 是否跳过控制通道，仅发送视频。
   bool disable_control = false;
-  // When non-empty in HID mode, write the reports to this dump file instead
-  // of /dev/hidraw (offline --dry-run). Same for the control channel.
-  // USB mode: when non-empty, write the exact 4096-byte video URBs to this
-  // dump file instead of libusb (offline --dry-run; fake_device --usb-dump).
+  // 非空时把生成的报文写入转储文件，供离线测试使用。
   std::string report_dump_path;
   std::string control_report_dump_path;
-  // libusb transfer type for the video endpoint: auto|interrupt|bulk.
+  // 视频端点的 libusb 传输类型，可选 auto、interrupt、bulk。
   std::string usb_transfer = "auto";
-  // The receiver firmware only accepts a fresh session. When startup/handshake
-  // fails (no isAllowed, no app-launched reply, claim busy) reset and
-  // re-enumerate the USB device automatically instead of requiring a replug.
+  // 握手失败时自动复位设备并重新枚举，最多重试三次。
   bool auto_reset = true;
-  int auto_reset_retries = 3;    // reset+retry cycles after the first attempt
-  int auto_reset_wait_ms = 5000; // wait for re-enumeration / hidraw node
-  // Optional reset when closing (off by default: the next run auto-resets if
-  // needed).
+  int auto_reset_retries = 3;
+  int auto_reset_wait_ms = 5000;
+  // 退出时是否复位设备，默认关闭。
   bool reset_on_exit = false;
-  // ALSA playback for the device's USB audio interface (IF2/IF3). Empty
-  // string disables audio even if compiled in.
+  // USB 音频接口对应的 ALSA 设备，留空表示不播放音频。
   std::string alsa_device = "plughw:USBDISPLAY,0";
+  // 音频输出后端：
+  // auto 根据 PulseAudio 是否列出 USB 声卡选择后端；
+  // alsa 直写 plughw:USBDISPLAY,0（安装音频隔离规则时使用）；
+  // pulse 使用显式 USB sink（未安装音频隔离规则时使用）。
+  std::string audio_backend = "auto";
+  // PulseAudio sink 名称，留空时自动查找 USB 设备对应的 sink。
+  std::string pulse_sink;
+  // 显式允许恢复启动时保存的默认 sink。默认只读记录，不修改系统设置。
+  bool restore_default_sink = false;
+  // 为真时不打开视频通道，仅做控制握手与音频推送，用于音频单独投屏。
+  bool disable_video = false;
 
-  // Legacy HID control-channel framing knobs (unused by the report path).
+  // 早期控制通道参数，当前代码不使用。
   uint16_t hid_report_size = 64;
   uint8_t hid_report_id = 0;
   bool hid_feature_report = false;
   bool hid_chunked = false;
 
-  // Emit a legacy stream-config packet (codec/resolution/audio JSON) on the
-  // media channel at start(). Disable if it confuses the receiver.
+  // IP 网络传输路径启动时是否发送流配置报文。
   bool send_stream_config = true;
-  // When true, a failed control handshake makes start() fail.
+  // 握手失败时 start() 是否返回失败。
   bool require_handshake = false;
-  // Send the provisional control handshake (common.* JSON-RPC methods) at
-  // start(). Off by default for the live HID path until the sequence is
-  // confirmed; enable explicitly with --handshake.
+  // 是否在 start() 中执行设备握手。
   bool send_handshake = false;
-  // ALSA audio playback (real device USB audio interface) toggles.
+  // 是否播放 USB 音频。音频接口与视频接口相互独立，可只启用一侧。
   bool enable_audio = true;
+  // 音频失败时是否让 start 失败；为假时音频失败只记录日志，视频继续。
   bool require_audio = false;
 
   static DeviceSelector usb(uint16_t vid = kDefaultVid, uint16_t pid = kDefaultPid);
   static DeviceSelector network(const std::string& host);
 };
 
-// Cumulative counters; snapshot obtained via Controller::stats().
+// 累计统计值，通过 Controller::stats() 获取快照。
 struct Stats {
   uint64_t video_frames = 0;
   uint64_t video_bytes = 0;
@@ -198,7 +185,7 @@ struct Stats {
   uint64_t control_tx = 0;
   uint64_t control_rx = 0;
   uint64_t send_errors = 0;
-  uint64_t dropped_packets = 0;   // sink backpressure / EAGAIN
+  uint64_t dropped_packets = 0;   // 发送端背压导致的丢包
   uint64_t heartbeat_tx = 0;
   uint64_t heartbeat_failures = 0;
   uint64_t last_video_pts_us = 0;
@@ -212,18 +199,18 @@ enum class EventType : uint8_t {
   Configured,
   StreamingStarted,
   StreamingStopped,
-  KeyframeRequested,   // caller should force the next frame to be an IDR
-  ControlMessage,      // JSON-RPC notification received from receiver
+  KeyframeRequested,   // 调用方应把下一帧编码为 IDR
+  ControlMessage,      // 收到设备发来的 JSON-RPC 消息
   WirePacket,
   Error,
 };
 
 struct Event {
   EventType type = EventType::Error;
-  std::string message;   // human readable
-  std::string method;    // for ControlMessage: JSON-RPC method
-  std::string json;      // for ControlMessage: raw params/result JSON
-  int code = 0;          // optional error code
+  std::string message;   // 可读说明
+  std::string method;    // 控制消息的 JSON-RPC 方法名
+  std::string json;      // 控制消息的原始参数或结果
+  int code = 0;          // 可选错误编号
 };
 
 using EventCallback = std::function<void(const Event&)>;

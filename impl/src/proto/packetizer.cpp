@@ -69,7 +69,7 @@ void Packetizer::packetize(const uint8_t* data, size_t len, MediaKind kind,
     return;
   }
 
-  // ---- RTP / H.264 (RFC 6184) ----
+  // RTP 与 H.264 打包。
   std::vector<detail::NalRange> nals;
   const bool scanned = detail::scan_nal_units(data, len, &nals);
   struct RtpFrag {
@@ -82,15 +82,14 @@ void Packetizer::packetize(const uint8_t* data, size_t len, MediaKind kind,
   };
   std::vector<RtpFrag> frags;
   if (!scanned) {
-    // Tolerate a bare NAL unit without start code.
+    // 允许输入为不带起始码的单个 NAL 单元。
     RtpFrag f;
     f.nal.assign(data, data + len);
     f.nal_type = static_cast<uint8_t>(data[0] & 0x1f);
     f.nri = static_cast<uint8_t>(data[0] & 0x60);
     frags.push_back(std::move(f));
   } else {
-    // options_.max_payload is the total UDP payload budget per packet, so the
-    // 12-byte RTP header (and the 2-byte FU-A headers) come out of it.
+    // max_payload 为每个 UDP 报文的总负载上限，需扣除 12 字节 RTP 头部与 2 字节 FU-A 头。
     const size_t max_payload = std::max<size_t>(options_.max_payload, 15);
     const size_t rtp_budget = max_payload - 12;
     for (const auto& r : nals) {
@@ -103,8 +102,7 @@ void Packetizer::packetize(const uint8_t* data, size_t len, MediaKind kind,
         f.nri = static_cast<uint8_t>(nal[0] & 0x60);
         frags.push_back(std::move(f));
       } else {
-        // RFC 6184 FU-A: the original NAL header byte is replaced by the FU
-        // indicator/header, so it is not part of the fragmented payload.
+        // FU-A 打包时原 NAL 头字节由 FU 指示与 FU 头替代，不包含在分片负载中。
         const uint8_t* body = nal + 1;
         const size_t body_size = r.size - 1;
         const size_t fu_capacity = rtp_budget - 2;
@@ -157,8 +155,7 @@ void Packetizer::packetize_config(const std::string& json_body,
                                   std::vector<std::vector<uint8_t>>& out) {
   if (json_body.empty()) return;
   if (options_.format != WireFormat::LegacyEzV1) {
-    // RTP has no side-band config packet; the receiver-specific control
-    // channel is responsible for stream parameters in that mode.
+    // RTP 没有独立配置报文，流参数由控制通道传递。
     return;
   }
   const uint8_t flags =

@@ -100,7 +100,7 @@
 
 ## 5. 已交付内容
 
-* `impl/`：C++17 + CMake 用户态实现（无内核/系统文件修改）
+* `impl/`：C++17 + CMake 用户态实现（用户态实现）
   * 控制通道（JSON-RPC over hidraw）实机验证：diag/json 工具可用
   * 音频：ALSA USB Audio 实机播放验证
   * 视频：libusb 精确 4096B EP2 发送器 + 完整握手（配合设备兼容码流可上屏；

@@ -32,7 +32,7 @@ std::string read_text(const std::string& path) {
   return ss.str();
 }
 
-// Parse "HID_ID=0003:00001DE1:0000F201" into bus/vid/pid.
+// 把 HID_ID 属性解析为总线编号、厂商编号与产品编号。
 void parse_hid_id(const std::string& value, uint16_t* bustype, uint16_t* vid,
                   uint16_t* pid) {
   unsigned bus = 0, vendor = 0, product = 0;
@@ -48,8 +48,7 @@ std::string dirname(const std::string& path) {
   return pos == std::string::npos ? "" : path.substr(0, pos);
 }
 
-// Resolve the USB interface directory of a hidraw sysfs node and read its
-// bInterfaceNumber (hex string).
+// 解析 hidraw 节点对应的 USB 接口目录并读取接口编号。
 int interface_number_for(const std::string& sysfs_hidraw) {
   char resolved[PATH_MAX];
   const std::string devdir_link = sysfs_hidraw + "/device";
@@ -244,9 +243,8 @@ bool HidrawDevice::open(const std::string& path, std::string* err) {
   if (fd_ < 0) {
     if (err) {
       *err = "open " + path + ": " + std::strerror(errno) +
-             " (install the one-time udev rule: sudo cp "
-             "tools/99-usbdisplay.rules /etc/udev/rules.d/ && sudo udevadm "
-             "control --reload && sudo udevadm trigger)";
+             " (install the one-time udev rule with "
+             "sudo tools/install-video-rules.sh)";
     }
     return false;
   }

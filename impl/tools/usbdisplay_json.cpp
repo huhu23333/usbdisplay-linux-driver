@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: MIT
-// usbdisplay_json - JSON session over the receiver's HID control channel.
+// 通过接收器 HID 控制通道进行 JSON 会话的工具。
 //
-// This is the live protocol-discovery tool: it sends JSON-RPC messages using
-// the verified 16-byte HID report framing, sends a heartbeat every second and
-// prints every reply/event from the device.
+// 按 16 字节报告头部发送 JSON-RPC 消息，定时发送携带会话编号的心跳，
+// 并打印设备返回的每条回复与事件。
 //
 //   usbdisplay_json --seconds 15
-//   usbdisplay_json --send '{"jsonrpc":"2.0","method":"common.get_device_description"}'
+//   usbdisplay_json --send '{"jsonrpc":"2.0","method":"app-launched","params":{...}}'
 //   usbdisplay_json --send @cmd.json --heartbeat-ms 500 --trace debug
-//   usbdisplay_json --stdin            # one JSON message per stdin line
+//   usbdisplay_json --stdin            每行输入一条 JSON 消息
 #include <poll.h>
 #include <unistd.h>
 
@@ -217,8 +216,7 @@ int main(int argc, char** argv) {
       std::fprintf(record, "%s\n", payload.c_str());
       std::fflush(record);
     }
-    // Answer device requests (documents with both method and id), as the
-    // Windows app does for projection-request-with-tx (PROTOCOL.md §8.1).
+    // 回复带方法名与编号的设备请求。
     json::Value doc;
     std::string jerr;
     if (!json::Value::parse(payload, &doc, &jerr) || !doc.is_object()) return;
@@ -242,7 +240,7 @@ int main(int argc, char** argv) {
     send_json(response.dump(), "answer");
   };
 
-  // Send the explicitly requested commands first.
+  // 先发送命令行指定的消息。
   for (const auto& command : options.commands) {
     std::string json = command;
     if (!command.empty() && command[0] == '@') {
@@ -262,15 +260,14 @@ int main(int argc, char** argv) {
     if (options.heartbeat_ms > 0 &&
         now - last_heartbeat >= static_cast<uint64_t>(options.heartbeat_ms)) {
       last_heartbeat = now;
-      // Verified: heartbeat must carry the session-id, and the device echoes
-      // it in its heartbeat reply.
+      // 心跳必须携带会话编号，设备会在回复中回传该编号。
       send_json("{\"jsonrpc\":\"2.0\", \"method\": \"heartbeat\", \"params\": "
                 "{\"session-id\": \"" +
                     options.session_id + "\"}}",
                 "hb");
     }
     if (options.stdin_mode) {
-      // Non-blocking stdin read of complete JSON lines.
+      // 非阻塞读取标准输入的完整 JSON 行。
       struct pollfd stdin_poll{};
       stdin_poll.fd = STDIN_FILENO;
       stdin_poll.events = POLLIN;

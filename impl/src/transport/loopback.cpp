@@ -34,8 +34,7 @@ class NullSink : public MediaSink {
   uint64_t bytes_ = 0;
 };
 
-// Parses every emitted packet with the same wire codec; catches framing
-// mistakes without any hardware or sockets.
+// 按相同格式解析每个发出的报文，无需硬件或网络即可发现封装错误。
 class LoopbackSink : public MediaSink {
  public:
   explicit LoopbackSink(proto::WireFormat format) : depacketizer_(format) {}

@@ -137,8 +137,7 @@ bool usb_device_accessible(uint16_t vid, uint16_t pid, std::string* err) {
       std::snprintf(
           buf, sizeof(buf),
           "cannot open %04x:%04x (bus %u addr %u): %s; install the one-time "
-          "udev rule: sudo cp tools/99-usbdisplay.rules /etc/udev/rules.d/ && "
-          "sudo udevadm control --reload && sudo udevadm trigger (fallback "
+          "udev rule: sudo tools/install-video-rules.sh (fallback "
           "for this session: sudo chmod 666 /dev/bus/usb/%03u/%03u)",
           vid, pid, ::libusb_get_bus_number(list[i]),
           ::libusb_get_device_address(list[i]), ::libusb_strerror(rc),

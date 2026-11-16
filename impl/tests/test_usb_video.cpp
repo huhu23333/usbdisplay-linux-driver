@@ -12,7 +12,7 @@ int main() {
   using namespace usbdisplay;
   using namespace usbdisplay::transport;
   {
-    // Verified layout: first URB carries L/width/height, continuations zero.
+    // 首条 URB 携带长度、宽度与高度，后续 URB 头部全为零。
     std::vector<uint8_t> au(5000);
     au[0] = 0;
     au[1] = 0;
@@ -41,13 +41,13 @@ int main() {
     CHECK(std::memcmp(urbs[1].data() + 16, au.data() + 4080, 5000 - 4080) ==
           0);
     CHECK(urbs[1][16 + 5000 - 4080] == 0);  // zero padding
-    // The first bytes of the payload preserve the Annex-B start code.
+    // 负载起始字节保留 Annex-B 起始码。
     const uint8_t* payload = urbs[0].data() + 16;
     CHECK(payload[0] == 0 && payload[1] == 0 && payload[2] == 0 &&
           payload[3] == 1);
   }
   {
-    // Small frame -> exactly one URB, no continuation header.
+    // 小帧只产生一条 URB，没有后续头部。
     std::vector<uint8_t> au = {0, 0, 0, 1, 0x09, 0x10};
     VideoUrbOptions options;
     std::vector<std::vector<uint8_t>> urbs;
@@ -60,7 +60,7 @@ int main() {
     CHECK(read_be32(urbs[0].data() + 12) == 720);
   }
   {
-    // Smaller URB size (2048): payload budget 2032.
+    // URB 长度为 2048 字节时，负载上限为 2032 字节。
     std::vector<uint8_t> au(3000, 0x5A);
     au[0] = 0;
     au[1] = 0;
@@ -77,7 +77,7 @@ int main() {
     CHECK(urbs[1][0] == 0x02 && urbs[1][1] == 0 && urbs[1][15] == 0);
   }
   {
-    // Empty input and invalid URB size are rejected.
+    // 空输入与非法 URB 长度应被拒绝。
     VideoUrbOptions options;
     std::vector<std::vector<uint8_t>> urbs;
     std::string err;
@@ -87,7 +87,7 @@ int main() {
     CHECK(!build_video_urbs(&one, 1, 1920, 1080, options, &urbs, &err));
   }
   {
-    // Dump sink round-trip + reassembly.
+    // 转储写入与重新拼装。
     const std::string path = "/tmp/usbdisplay_test_urbs.bin";
     std::vector<uint8_t> au(9000);
     au[0] = 0;

@@ -47,20 +47,18 @@ int main() {
       CHECK(aus[2].data + aus[2].size == stream.data() + stream.size());
       CHECK(annexb::describe_access_unit(aus[0]).find("5*") !=
             std::string::npos);
-      // Root-cause guard: every access unit must keep its original Annex-B
-      // start code (the previous black-screen bug dropped them).
+      // 每个访问单元必须保留原始 Annex-B 起始码。
       for (const auto& au : aus) {
         CHECK(au.size >= 4);
         CHECK(au.data[0] == 0 && au.data[1] == 0);
         CHECK((au.data[2] == 1) || (au.data[2] == 0 && au.data[3] == 1));
       }
-      // The first NAL of every frame is the AUD (verified stream layout).
+      // 每帧的首个 NAL 单元为 AUD。
       std::vector<usbdisplay::proto::detail::NalRange> nals;
       CHECK(usbdisplay::proto::detail::scan_nal_units(
           aus[0].data, aus[0].size, &nals));
       CHECK(!nals.empty() && nals[0].type == 9);
-      // Concatenating the AUs must reproduce the input byte-for-byte: no
-      // start code or parameter-set byte may be lost or reordered.
+      // 拼接全部访问单元必须逐字节还原输入数据。
       std::vector<uint8_t> rebuilt;
       for (const auto& au : aus) {
         rebuilt.insert(rebuilt.end(), au.data, au.data + au.size);
@@ -69,7 +67,7 @@ int main() {
     }
   }
   {
-    // Input without a start code must be rejected, not silently accepted.
+    // 缺少起始码的输入必须被拒绝。
     const std::vector<uint8_t> junk = {0x11, 0x22, 0x33, 0x44, 0x55};
     std::vector<annexb::AccessUnit> aus;
     std::string err;
@@ -77,7 +75,7 @@ int main() {
     CHECK(!err.empty());
   }
   {
-    // Parameter sets only (no VCL) must not produce a bogus access unit.
+    // 仅含参数集而没有编码切片时不得产生访问单元。
     std::vector<uint8_t> stream;
     nal(&stream, 0x67, {0x11});
     nal(&stream, 0x68, {0x22});

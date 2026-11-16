@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Control channel over /dev/hidraw (HID output/feature reports).
+// 基于 hidraw 的控制通道，使用 HID 输出报告与特性报告。
 #pragma once
 
 #include <cstdint>
@@ -19,8 +19,7 @@ struct HidChannelConfig {
   uint8_t report_id = 0;
   size_t report_size = 64;
   bool use_feature_report = false;
-  // Provisional chunked framing for messages larger than one report:
-  // [u16le total][u16le offset][chunk...]; see README.
+  // 大于单条报告的消息使用分片格式：小端序总长度、小端序偏移、分片内容。
   bool chunked = false;
   int timeout_ms = 1000;
 };

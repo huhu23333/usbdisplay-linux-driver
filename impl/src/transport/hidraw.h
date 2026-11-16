@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// /dev/hidraw access for the USB Display HID control channel (no hidapi).
+// USB Display 控制通道使用的 hidraw 访问层，不依赖 hidapi。
 #pragma once
 
 #include <cstddef>
@@ -27,18 +27,16 @@ struct HidrawInfo {
 
 std::vector<HidrawInfo> enumerate_hidraw(std::string* err);
 bool find_hidraw(uint16_t vid, uint16_t pid, HidrawInfo* out, std::string* err);
-// Find the hidraw node whose USB interface number matches (bInterfaceNumber).
+// 按 USB 接口编号查找对应的 hidraw 节点。
 bool find_hidraw_by_interface(uint16_t vid, uint16_t pid, int interface_number,
                               HidrawInfo* out, std::string* err);
 
-// Poll for a (re-)enumerated, read/write-accessible hidraw node for the given
-// USB interface. Used after a device reset.
+// 轮询等待指定 USB 接口出现可读写的 hidraw 节点，供设备复位后使用。
 bool wait_for_hidraw_interface(uint16_t vid, uint16_t pid, int interface_number,
                                int timeout_ms, HidrawInfo* out,
                                std::string* err);
 
-// Report sizes decoded from a HID report descriptor, per report id, in bytes
-// of report data (excluding the report-id byte).
+// 从 HID 报告描述符解析出的各报告编号数据长度，不含报告编号字节。
 struct HidReportSizes {
   std::map<uint8_t, size_t> input;
   std::map<uint8_t, size_t> output;
@@ -63,18 +61,16 @@ class HidrawDevice {
   bool get_info(HidrawInfo* out, std::string* err) const;
   std::vector<uint8_t> report_descriptor(std::string* err) const;
 
-  // Writes an HID output report. `payload` excludes the report-id byte;
-  // the buffer is padded to report_size bytes of payload.
+  // 写入一条 HID 输出报告，负载不含报告编号字节，缓冲区补齐到指定长度。
   bool write_output_report(uint8_t report_id, const uint8_t* payload,
                            size_t len, size_t report_size, std::string* err);
-  // Same but via HIDIOCSFEATURE (feature report).
+  // 通过 HIDIOCSFEATURE 写入特性报告。
   bool write_feature_report(uint8_t report_id, const uint8_t* payload,
                             size_t len, size_t report_size, std::string* err);
-  // Reads one input report. Returns >0 = bytes, 0 = timeout, -1 = error.
+  // 读取一条输入报告，返回字节数、零表示超时、负值表示错误。
   int read_report(uint8_t* buf, size_t len, int timeout_ms, std::string* err);
 
-  // Writes exactly one HID report buffer verbatim (buffer[0] = report id,
-  // length must equal the report size expected by the kernel).
+  // 原样写入一条 HID 报告，首字节为报告编号，长度必须与内核要求一致。
   bool write_raw(const uint8_t* buffer, size_t len, std::string* err);
 
  private:

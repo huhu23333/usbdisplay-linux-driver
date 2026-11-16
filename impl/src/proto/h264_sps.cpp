@@ -68,7 +68,7 @@ class BitReader {
   size_t bit_pos_ = 0;
 };
 
-// Insert an emulated 0x03 byte after 00 00 0x? sequences (RBSP -> EBSP).
+// 在零字节序列后插入防竞争字节，把 RBSP 转换为 EBSP。
 std::vector<uint8_t> to_ebsp(const std::vector<uint8_t>& rbsp) {
   std::vector<uint8_t> out;
   out.reserve(rbsp.size() + 8);
@@ -125,7 +125,7 @@ bool parse_sps(const uint8_t* nal, size_t len, SpsInfo* out, std::string* err) {
     if (err) *err = "not an SPS NAL unit";
     return false;
   }
-  // Strip emulation-prevention bytes before bit-level parsing.
+  // 逐位解析前先去除防竞争字节。
   std::vector<uint8_t> rbsp;
   rbsp.reserve(len);
   int zeros = 0;
@@ -302,7 +302,7 @@ std::vector<uint8_t> make_test_sps(uint32_t width, uint32_t height,
                                    uint32_t num_units_in_tick,
                                    uint32_t time_scale, bool with_vui) {
   std::vector<uint8_t> bits;
-  // simpler: accumulate into a bit vector then pack at the end
+  // 先累积比特，最后统一打包为字节。
   bits.clear();
   std::vector<uint8_t> bit_values;
   auto put = [&bit_values](uint32_t value, int count) {
@@ -352,7 +352,7 @@ std::vector<uint8_t> make_test_sps(uint32_t width, uint32_t height,
     put(0, 1);  // pic_struct_present
     put(0, 1);  // bitstream_restriction_flag
   }
-  // rbsp_stop_one_bit + alignment zeros
+  // 写入结束位与填充零位。
   put(1, 1);
   while (bit_values.size() % 8 != 0) bit_values.push_back(0);
   std::vector<uint8_t> rbsp;

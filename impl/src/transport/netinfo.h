@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Network interface / reachability helpers for diagnostics (getifaddrs).
+// 诊断使用的网络接口与可达性查询工具。
 #pragma once
 
 #include <cstdint>
@@ -20,11 +20,10 @@ struct NetInterface {
 
 std::vector<NetInterface> enumerate_net_interfaces(std::string* err);
 
-// True when the address belongs to one of the known USB Display receiver
-// subnets (192.168.203.0/24 or 192.168.168.0/24).
+// 判断地址是否属于接收器的常见网段。
 bool ip_in_device_subnet(const std::string& ip);
 
-// Non-blocking TCP connect probe.
+// 非阻塞 TCP 连接探测。
 bool tcp_probe(const std::string& host, uint16_t port, int timeout_ms);
 
 }  // namespace transport

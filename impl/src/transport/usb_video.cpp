@@ -23,9 +23,8 @@ std::string access_hint(libusb_device* device) {
   std::snprintf(
       buf, sizeof(buf),
       "permission denied opening USB device (bus %u addr %u); install the "
-      "one-time udev rule: sudo cp tools/99-usbdisplay.rules "
-      "/etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm "
-      "trigger (fallback for this session only: sudo chmod 666 "
+      "one-time udev rule: sudo tools/install-video-rules.sh "
+      "(fallback for this session only: sudo chmod 666 "
       "/dev/bus/usb/%03u/%03u)",
       libusb_get_bus_number(device), libusb_get_device_address(device),
       libusb_get_bus_number(device), libusb_get_device_address(device));
@@ -114,7 +113,7 @@ class LibusbVideoSink : public UsbVideoSink {
     }
     claimed_interface_ = true;
 
-    // Find the OUT endpoint of the video interface.
+    // 查找视频接口的输出端点。
     struct libusb_config_descriptor* config = nullptr;
     endpoint_address_ = options_.endpoint_address;
     if (libusb_get_active_config_descriptor(target, &config) == 0 &&
@@ -221,7 +220,7 @@ class LibusbVideoSink : public UsbVideoSink {
              rc != LIBUSB_ERROR_TIMEOUT && rc != LIBUSB_ERROR_IO)) {
           break;
         }
-        // Fall back to the other transfer type once.
+        // 首次失败时改用另一种传输类型重试一次。
         mode_ = (mode_ == TransferMode::Bulk) ? TransferMode::Interrupt
                                               : TransferMode::Bulk;
         log::info(std::string("usb-video: retrying with ") + transfer_name() +
@@ -363,7 +362,7 @@ bool build_video_urbs(const uint8_t* annexb, size_t len, uint32_t width,
     urb[0] = options.report_id;
     if (first) {
       write_be32(urb.data() + 1, static_cast<uint32_t>(len));
-      // bytes 5..7 stay zero
+      // 第 5 到 7 字节保持为零
       write_be32(urb.data() + 8, width);
       write_be32(urb.data() + 12, height);
       first = false;

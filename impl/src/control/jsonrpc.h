@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// JSON-RPC 2.0 helpers for the receiver control channel.
+// 控制通道使用的 JSON-RPC 2.0 工具。
 #pragma once
 
 #include <cstdint>
@@ -35,7 +35,7 @@ class JsonRpcClient {
   bool call(const std::string& method, const json::Value& params,
             json::Value* result, std::string* err);
 
-  // Wait for one message; timeout returns false with timed_out=true.
+  // 等待一条消息，超时返回假并把 timed_out 置为真。
   bool recv(RpcMessage* message, int timeout_ms, bool* timed_out,
             std::string* err);
 

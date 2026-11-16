@@ -30,7 +30,7 @@ bool parse_u64(const std::string& text, uint64_t* out);
 bool parse_int(const std::string& text, int* out);
 std::string trim(const std::string& s);
 
-// Read/write whole files. err is set on failure.
+// 读取或写入整个文件，失败时写入错误信息。
 bool read_file(const std::string& path, std::vector<uint8_t>* out,
                std::string* err);
 bool write_file(const std::string& path, const void* data, size_t len,

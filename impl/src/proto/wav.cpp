@@ -32,7 +32,7 @@ bool parse(const uint8_t* bytes, size_t len, WavInfo* out, std::string* err) {
     const uint32_t size = rd32(bytes + pos + 4);
     const size_t body = pos + 8;
     if (body + size > len) {
-      // Tolerate truncated final chunk only if it is data.
+      // 仅允许末尾数据块被截断。
       if (std::memcmp(id, "data", 4) != 0) {
         if (err) *err = "truncated WAV chunk " + std::string(id, 4);
         return false;
@@ -45,8 +45,7 @@ bool parse(const uint8_t* bytes, size_t len, WavInfo* out, std::string* err) {
       out->block_align = rd16(bytes + body + 12);
       out->bits_per_sample = rd16(bytes + body + 14);
       if (out->format_tag == 0xFFFE && size >= 40) {
-        // WAVE_FORMAT_EXTENSIBLE: subformat GUID starts at body+24; first two
-        // bytes are the actual format tag.
+        // WAVE_FORMAT_EXTENSIBLE 的子格式标识从偏移 24 开始，前两字节为实际格式标签。
         out->format_tag = rd16(bytes + body + 24);
       }
       have_fmt = true;

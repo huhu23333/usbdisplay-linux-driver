@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: MIT
-// usbdisplay_probe - inspect the receiver's HID input reports and (optionally)
-// send one carefully specified report/message. Read-only by default; it never
-// sends anything unless --send-json/--send-hex is given.
+// 查看接收器 HID 输入报告的工具，默认只读，
+// 只有指定发送参数时才会写入设备。
 //
-//   usbdisplay_probe                          # read both interfaces for 5 s
+//   usbdisplay_probe                          读取两个接口五秒
 //   usbdisplay_probe --seconds 10 --hex 64
 //   usbdisplay_probe --interface control --send-json '{"jsonrpc":"2.0",...}'
-//
-// Useful when comparing the device's own replies with the Windows app: run
-// this while the app is active, or after sending candidate init messages.
 #include <poll.h>
 #include <unistd.h>
 
@@ -121,7 +117,7 @@ void describe_input_report(const uint8_t* report, size_t len, size_t hex_bytes) 
   const uint8_t* data = report + (len > 0 ? 1 : 0);
   size_t data_len = len > 0 ? len - 1 : 0;
   std::printf("  report id=%u len=%zu\n", report_id, len);
-  // Many device replies are plain JSON.
+  // 设备回复多为纯 JSON 文本。
   if (data_len > 0 && (data[0] == '{' || data[0] == '[')) {
     size_t end = data_len;
     while (end > 0 && data[end - 1] == 0) --end;
@@ -275,7 +271,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  // HidrawDevice is not movable, so keep targets behind unique_ptr.
+  // HidrawDevice 不可移动，使用 unique_ptr 保存目标。
   std::vector<std::unique_ptr<Target>> targets;
   if (options.interface != "video" && !options.control_path.empty()) {
     std::unique_ptr<Target> target(new Target());
@@ -309,7 +305,7 @@ int main(int argc, char** argv) {
     pfd.events = POLLIN;
     fds.push_back(pfd);
   }
-  // Also watch for stdin EOF/control? Keep it simple: time based.
+  // 按时间结束读取。
   const uint64_t start_ms = mono_ms();
   std::vector<uint8_t> buffer(16384);
   while ((mono_ms() - start_ms) < static_cast<uint64_t>(options.seconds) * 1000) {

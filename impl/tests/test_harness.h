@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Tiny test harness: no external dependencies, works with ctest.
+// 精简测试框架，无外部依赖，可直接与 ctest 配合使用。
 #pragma once
 
 #include <cstdio>

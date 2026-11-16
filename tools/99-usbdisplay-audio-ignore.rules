@@ -1,0 +1,2 @@
+# USB_DISPLAY 音频隔离：PulseAudio 忽略该 USB 声卡，桌面音频保持原输出
+SUBSYSTEM=="sound", ATTRS{idVendor}=="1de1", ATTRS{idProduct}=="f201", ENV{PULSE_IGNORE}="1"

@@ -1,0 +1,10 @@
+build/
+*.o
+*.a
+*.so
+*.h264
+*.mp4
+*.wav
+*.log
+__pycache__/
+.vscode/

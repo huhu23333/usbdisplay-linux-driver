@@ -1,0 +1,3 @@
+# USB_DISPLAY (1de1:f201) 用户态访问权限（安装脚本会写入 /etc/udev/rules.d/）
+SUBSYSTEM=="usb", ATTR{idVendor}=="1de1", ATTR{idProduct}=="f201", MODE="0666", TAG+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1de1", ATTRS{idProduct}=="f201", MODE="0666", TAG+="uaccess"

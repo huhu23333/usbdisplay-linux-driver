@@ -6,9 +6,10 @@
 
 ## 已验证能力
 
-- 1920x1080 分辨率、60 帧每秒、约 4 Mbps 码率，硬件编码与软件编码均可流畅显示。
+- evdi 独立虚拟显示服务：单个 EDID 同时暴露 1920x1080@60 和 @120，KDE 显示设置可直接切换刷新率；USB 发送固定 60fps、约 4 Mbps 码率。
+- 开放控制接口 `usbdisplay_evdi_ctl connect|disconnect|status`，不依赖 USB 驱动；USB 驱动仅在插拔时调用，抓帧服务完全独立。
 - 连续两次运行之间不需要拔插设备，不需要 sudo 权限（安装脚本完成权限配置后）。
-- 构建无警告，单元测试与集成测试共 21 项全部通过。
+- 构建无警告，单元测试与集成测试共 30 项全部通过。
 - 音频与视频可分别投屏：音频后端 auto 按安装模式选择，安装了音频隔离规则时 ALSA 直写，未安装时使用 PulseAudio 显式 USB sink；程序音频只送到设备，视频侧不依赖音频。
 
 ## 目录结构
@@ -17,11 +18,22 @@
 impl/                         C++17 用户态驱动
 tools/install-video-rules.sh  仅安装 USB/HID 视频权限规则
 tools/install-audio-isolation.sh  仅安装音频隔离规则
+tools/evdi-precreate.sh       evdi 专用虚拟显示设备预创建（root）
+tools/usbdisplay-evdi.service evdi grabber systemd 服务（ExecStartPre 预创建 + ExecStart 常驻 grabber）
+tools/install-evdi-support.sh evdi grabber/unit/组/Xorg 安装卸载脚本
+tools/usbdisplay-daemon.service 消费 daemon systemd user 服务
+install.sh                    一键安装视频规则、evdi 支持、grabber、daemon 与用户服务
+impl/tools/usbdisplay_evdi_grabber.cpp  只抓帧并写共享内存，不编码/USB
+impl/tools/usbdisplay_daemon.cpp        只读共享帧、x264 编码与 Controller 推送
+impl/src/evdi/shared_frame.*            三槽共享帧协议
+impl/tools/usbdisplay_evdi_ctl.cpp      控制 CLI（connect/disconnect/status）
+impl/third_party/evdi/        libevdi 头文件（LGPL-2.1-or-later）
 tools/usbdisplay_encode.sh    视频转码脚本
 tools/usbdisplay_run.sh       投屏脚本
 tools/99-usbdisplay-usb.rules  USB/HID 权限规则
 tools/99-usbdisplay-audio-ignore.rules  可选音频隔离规则
 docs/                         协议文档与使用说明副本
+docs/EVDI_SETUP.md            evdi 模块、专用设备与 X11/Wayland 集成说明
 ```
 
 ## 依赖
@@ -31,6 +43,7 @@ docs/                         协议文档与使用说明副本
 - ffmpeg（转码时使用）
 - ALSA（音频直写与回退）
 - libpulse（PulseAudio 播放流与声卡 profile 临时释放时使用）
+- libevdi（可选 grabber）、libx264/libswscale（可选消费 daemon）；缺失时可用 -DUSBDISPLAY_BUILD_DAEMON=OFF 关闭构建
 - Intel 核显硬编需要 intel-media-va-driver，Meteor Lake 等新核显需要 24 及以上版本
 
 ## 安装
@@ -46,6 +59,50 @@ sudo tools/install-audio-isolation.sh --uninstall
 
 未安装音频隔离规则时，PulseAudio 会把该设备当作普通桌面音频输出，auto 模式使用 PulseAudio 显式 USB sink，用户可在 KDE 音频设置中选择设备，程序不修改默认输出。安装音频隔离规则后需要重新插拔设备，PulseAudio 不再看到该 USB 声卡，auto 模式改用 ALSA 直写 plughw:USBDISPLAY,0，桌面音频与 KDE 界面保持原设备。两个脚本分别管理视频权限与音频隔离，卸载其中一个不影响另一个。
 
+evdi 虚拟显示支持独立安装，不影响上述视频/音频规则：
+
+```bash
+sudo tools/install-evdi-support.sh
+sudo tools/install-evdi-support.sh --uninstall
+```
+
+安装脚本会安装 `usbdisplay-evdi.service`：`ExecStartPre` 在显示管理器之前创建/复用
+专用 1920x1080 evdi card，`ExecStart` 常驻 `usbdisplay_evdi_grabber`，两者同生命周期，
+grabber 是独立 evdi 虚拟显示服务，默认 disconnected；通过 `/run/usbdisplay/control.sock`
+（0660、组 `usbdisplay`）接受 CONNECT/DISCONNECT/STATUS，任何程序可用
+`usbdisplay_evdi_ctl connect [60|120]|disconnect|status` 控制，不依赖 USB；虚拟显示
+支持 1080p60/120（单个 EDID 同时暴露两个模式，桌面可直接切刷新率），USB
+发送固定 60fps。USB 驱动在 USB
+在线/离线时调用同一接口，自身只取帧投屏。
+
+grabber 只抓帧并写入 `/dev/shm/usbdisplay-frames`（三槽、0660、
+组 `usbdisplay`），并在 `/run/usbdisplay/frames.sock` 提供 ACQUIRE/RELEASE 租约；不编码、
+不访问 USB 视频接口、不等待 consumer。consumer 只读映射共享帧，绝不写槽状态。
+USB 在线时才 `evdi_connect2` 提交含 `USBDisplay` 名称的 EDID，拔出即断开。消费 daemon
+不直接访问 evdi；socket 断开/共享 inode 变化/旧 magic 时关闭并重开。本机已有 evdi 设备不会被
+枚举、修改或删除，evdi 路径不使用音频。权限、marker 所有权与清理限制见
+[docs/EVDI_SETUP.md](docs/EVDI_SETUP.md)。
+
+### 一键安装扩展示显示屏（可选）
+
+手动视频输出与扩展示显示屏是两层功能：
+
+- 手动视频输出：安装 `tools/install-video-rules.sh` 后，用 `usbdisplay_send` 或 C++ Controller 手动发送 H.264。
+- 扩展示显示屏：单个 systemd 服务先预创建 evdi card，再启动常驻 grabber；grabber 只抓帧写共享内存，USB 插入时才连接 evdi，拔出即断开。消费 daemon 只读共享帧并编码推送，不直接访问 evdi；USB 在线才启动 Controller，失败不影响 grabber。
+
+```bash
+sudo ./install.sh
+sudo ./install.sh --uninstall
+```
+
+一键脚本会安装 USB/HID 视频权限规则，构建并安装 `usbdisplay_evdi_grabber` 与
+`usbdisplay_daemon`，安装 evdi 服务（含预创建、usbdisplay 组、Xorg 配置），再把
+消费 daemon 的 user unit 安装到当前 sudo 用户。安装时不会提前启动用户 daemon；
+登录桌面后执行 `systemctl --user start usbdisplay-daemon.service`。它不安装音频隔离
+规则，也不修改音频配置。若用户 systemd 会话不可用，脚本会打印手动 enable/start 命令。
+共享帧与 socket 权限需要重新登录使 usbdisplay 组生效；架构、失败恢复、KWin 多 GPU 与卸载限制见
+[docs/EVDI_SETUP.md](docs/EVDI_SETUP.md)。
+
 ## 构建与测试
 
 ```bash
@@ -53,6 +110,10 @@ cmake -S impl -B build
 cmake --build build -j
 ctest --test-dir build
 ```
+
+evdi grabber/daemon 是可选目标；缺少 libevdi、libx264 或 libswscale 时可执行
+`cmake -S impl -B build -DUSBDISPLAY_BUILD_DAEMON=OFF` 关闭。消费 daemon 不链接
+libevdi；grabber 不链接 libx264/libswscale。
 
 ## 编码
 

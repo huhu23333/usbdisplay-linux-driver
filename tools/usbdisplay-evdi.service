@@ -1,0 +1,20 @@
+[Unit]
+Description=USB Display evdi grabber（预创建 card 并抓帧到共享内存）
+Documentation=file:/usr/local/libexec/usbdisplay/evdi-precreate.sh
+After=systemd-modules-load.service systemd-logind.service
+Before=display-manager.service
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+Group=usbdisplay
+ExecStartPre=/usr/local/libexec/usbdisplay/evdi-precreate.sh --service
+ExecStart=/usr/local/bin/usbdisplay_evdi_grabber
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

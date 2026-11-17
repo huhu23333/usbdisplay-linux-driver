@@ -1,0 +1,11 @@
+[Unit]
+Description=USB Display evdi 扩展显示屏 daemon
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/usbdisplay_daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
